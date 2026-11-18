@@ -8,7 +8,7 @@ window.FLOWSUITE_CONFIG = {
   n8nWebhookBase: '',
   // Origens exatas autorizadas para postMessage, ex.: ['https://crm.exemplo.com'].
   // Nunca use '*' em produção.
-  allowedParentOrigins: [*],
+  allowedParentOrigins: ['*'],
   // Opcional: URL pública definitiva; se vazio utiliza window.location.origin.
   publicBaseUrl: ''
 };
