@@ -74,3 +74,14 @@ Leia `docs/CONTRATO_N8N.md` antes de montar os fluxos. Os workflows n8n **não e
 - O `postMessage` não autentica o ticket. Apenas apresenta informações recebidas de origens autorizadas.
 - Para uso em iframe, configure os headers CSP / `frame-ancestors` adequados no proxy, sempre restringindo ao CRM real. Evite bloqueio por `X-Frame-Options: DENY`.
 - Arquivos de configuração de exemplo não devem ser usados para produção sem preenchimento.
+
+## Nova versão v2 — AVEC
+
+- Nova seção **Relatórios AVEC** no painel, com pesquisa e detalhes de **230** operações extraídas da coleção recebida.
+- Mapeamento das nove funcionalidades (8 automações + histórico) aos relatórios correspondentes.
+- Cliente AVEC server-side em `integrations/avec-client.mjs`, com host permitido, token no cabeçalho, limite 250 e paginação `HasMore`.
+- CLI opcional `integrations/avec-cli.mjs` para verificar **apenas no servidor** os campos e a quantidade de registros, com token vindo de variável de ambiente.
+- Testes em `tests/` e mapa técnico em `docs/AVEC_V2.md`.
+- Não altera tabelas ou credenciais da sua instalação atual. Para esta versão, basta fazer deploy do frontend atualizado. O fluxo de envio Clickmassa e as rotinas n8n ainda requerem os endpoints corretos e respostas reais da AVEC.
+
+**Como publicar:** faça backup da versão atual; envie os arquivos v2 ao mesmo repositório no ramo de teste (ou faça merge após revisar); no EasyPanel implante o novo commit. Use `main` somente quando os testes de homologação passarem.

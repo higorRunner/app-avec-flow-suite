@@ -1,0 +1,10 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {requestUrl,formatAvecDate,fetchReportPage,fetchReportAll} from '../integrations/avec-client.mjs';
+const token='token-teste-nao-real';
+test('monta URL e limite AVEC',()=>{const u=new URL(requestUrl('0107',{dias:30,limit:250}));assert.equal(u.origin,'https://api.avec.beauty');assert.equal(u.searchParams.get('dias'),'30');assert.throws(()=>requestUrl('0107',{limit:251}));assert.throws(()=>requestUrl('../x'));assert.throws(()=>requestUrl('0107',{},'https://evil.example'));});
+test('valida data dd/mm/aaaa',()=>{assert.equal(formatAvecDate(new Date('2026-11-18T00:00:00Z')),'18/11/2026');assert.throws(()=>requestUrl('0001',{inicio:'01/date(m/Y)'}));});
+test('solicitação utiliza token em header e pagina',async()=>{let calls=0;const fetchImpl=async (url,opts)=>{calls++;assert.equal(opts.headers.Authorization,token);assert.equal(new URL(url).searchParams.get('page'),String(calls));return {ok:true,json:async()=>({Data:{Result:[{id:calls}],HasMore:calls===1}})}};const result=await fetchReportAll({code:'0004',token,fetchImpl});assert.equal(calls,2);assert.equal(result.records,2);});
+test('não vaza token em mensagens de erro HTTP',async()=>{const fetchImpl=async()=>({ok:false,status:401});await assert.rejects(fetchReportPage({code:'0004',token,fetchImpl}),e=>!e.message.includes(token)&&e.message.includes('401'));});
+test('falha ao não reconhecer resposta, evitando fila incorreta',async()=>{await assert.rejects(fetchReportPage({code:'0004',token,fetchImpl:async()=>({ok:true,json:async()=>({items:[]})})}),/Result/);});
+test('impede paginação truncada silenciosamente',async()=>{await assert.rejects(fetchReportAll({code:'0004',token,maxPages:2,fetchImpl:async()=>({ok:true,json:async()=>({Result:[1],HasMore:true})})}),/excedeu/);});
