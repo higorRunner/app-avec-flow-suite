@@ -16,18 +16,39 @@ const customers=Array.from({length:30},(_,i)=>({
 let automations=[{ id:'rule-1', type:'csat', name:'Pesquisa antiga', channel_id:'c1', template_id:'t1',
   rules:{service_ids:['s1'],extra_legacy:true}, variable_mapping:{'1':'legacy.full_name'}, send_time:'09:00' }];
 const role=window.FLOWSUITE_TEST_ROLE||'owner';
-window.testCalls={jobs:[],rules:[],queries:[]};
+window.testCalls={jobs:[],rules:[],queries:[],rpc:[]};
+const setup={status:{avec:false,worker:new Date().toISOString()},channels:[
+  {id:'c1',name:'WhatsApp principal',type:'waba',ready:false,configured:false,enabled:false}
+]};
 window.supabase={createClient:()=>({
  auth:{
   getSession:async()=>({data:{session:{access_token:'test',user:{id:'u1',email:'test@example.com'}}}}),
   onAuthStateChange:()=>{}
+ },
+ rpc:async (name,args)=>{
+  if(name==='fs_integration_setup') return {data:setup,error:null};
+  if(name==='fs_preview_automation') return {data:2,error:null};
+  if(name==='fs_queue_clickmassa_test'){
+   window.testCalls.jobs.push([{channel_id:args.p_channel,test_run:true,source:'manual',status:'queued'}]);
+   window.testCalls.rpc.push({name,args});
+   return {data:'test-queued',error:null};
+  }
+  window.testCalls.rpc.push({name,args});
+  if(name==='fs_set_avec_token') setup.status.avec=true;
+  if(name==='fs_save_clickmassa_account'){
+   setup.catalog_email=args.p_email;setup.catalog_tenant=args.p_tenant;setup.status.sync='pending';
+  }
+  if(name==='fs_save_clickmassa_sender'){
+   setup.channels[0].configured=true;setup.channels[0].enabled=args.p_enabled;
+  }
+  return {data:null,error:null};
  },
  from(table){
   const filters={};
   let range=null, search='', write=null, single=false;
   const result=()=>{
    let data=[];
-   if(table==='profiles') data={id:'u1',master_admin:false,full_name:'Usuária de teste'};
+   if(table==='profiles') data={id:'u1',master_admin:Boolean(window.FLOWSUITE_TEST_MASTER),full_name:'Usuária de teste'};
    if(table==='establishments') data=[{id:'e1',name:'Ambiente de teste',slug:'teste',active:true,timezone:'America/Sao_Paulo'}];
    if(table==='memberships') data=[{establishment_id:'e1',role}];
    if(table==='integration_status') data={establishment_id:'e1',avec_configured:false,clickmassa_configured:false};
@@ -48,7 +69,11 @@ window.supabase={createClient:()=>({
     }
     data=automations;
    }
-   if(table==='message_jobs'&&write) window.testCalls.jobs.push(write);
+   if(table==='message_jobs'){
+    if(write) window.testCalls.jobs.push(write);
+    else data=window.testCalls.jobs.flat().map((job,index)=>({...job,id:'job-'+index,
+      created_at:'2026-11-18T15:00:00Z',customers:{name:'Cliente'}})).filter(row=>!filters.customer_id||row.customer_id===filters.customer_id);
+   }
    if(table==='customers') window.testCalls.queries.push({filters,range,search});
    return {data:single&&Array.isArray(data)?data[0]||null:data,error:null};
   };
@@ -119,6 +144,10 @@ with sync_playwright() as p:
     expect(page.get_by_text("Clientes que não retornam há dias",exact=False).last).to_be_visible()
 
     navigate(page,"Automações")
+    page.get_by_role("button",name="Simular",exact=True).click()
+    expect(page.get_by_role("dialog").get_by_text("2 envios elegíveis",exact=False)).to_be_visible()
+    assert page.evaluate("window.testCalls.jobs.length") == 0
+    page.keyboard.press("Escape")
     page.get_by_role("button",name="Editar",exact=True).click()
     expect(page.get_by_role("dialog")).to_be_visible()
     expect(page.get_by_label("Campo Primeiro nome")).to_have_value("__saved")
@@ -170,6 +199,23 @@ with sync_playwright() as p:
     assert qr["template_id"] is None and qr["payload"]["transport"] == "clickmassa"
     assert qr["payload"]["body"] == "Olá, contato de teste" and qr["payload"]["note"] == "Apenas equipe"
 
+    navigate(page,"Catálogos e serviços",mobile=True)
+    page.get_by_label("Filtrar por canal").select_option("c1")
+    expect(page.get_by_role("cell",name="Boas-vindas",exact=True)).to_be_visible()
+    expect(page.get_by_role("cell",name="WhatsApp principal",exact=True).first).to_be_visible()
+
+    navigate(page,"Envio manual",mobile=True)
+    page.get_by_role("button",name="Envio de teste",exact=True).click()
+    page.get_by_label("Canal",exact=True).select_option("c2")
+    page.get_by_label("Mensagem",exact=True).fill("Teste da equipe")
+    page.get_by_label("Número com DDI").fill("+55 11 99999-0000")
+    expect(page.locator("#manual-customers")).to_have_count(0)
+    page.get_by_role("checkbox",name=re.compile("contato da equipe autorizou")).check()
+    page.get_by_role("button",name="Enviar teste").click()
+    expect(page.get_by_role("cell",name="Teste",exact=True)).to_be_visible()
+    assert page.evaluate("window.testCalls.jobs[2][0].test_run") is True
+    assert page.evaluate("window.testCalls.rpc.at(-1).args.p_phone") == "+5511999990000"
+
     navigate(page,"Clientes e histórico",mobile=True)
     page.get_by_label("Buscar por nome ou telefone").fill("Cliente 30")
     expect(page.get_by_text("Cliente 30",exact=True)).to_be_visible()
@@ -181,10 +227,43 @@ with sync_playwright() as p:
     viewer.route("**/*",fulfill)
     viewer.set_default_timeout(8000)
     viewer.add_init_script("window.FLOWSUITE_TEST_ROLE='viewer'")
-    viewer.goto(BASE)
+    viewer.goto(BASE+"/?admin=1")
+    expect(viewer.get_by_role("heading",name="Visão geral",exact=True)).to_be_visible()
+    expect(viewer.get_by_role("navigation",name="Administração")).to_have_count(0)
     navigate(viewer,"Envio manual")
     expect(viewer.get_by_text("Um operador ou gestor pode adicionar mensagens à fila.")).to_be_visible()
     expect(viewer.get_by_role("button",name="Adicionar à fila")).to_have_count(0)
+    master = browser.new_page(viewport={"width":1280,"height":860})
+    master.route("**/*",fulfill)
+    master.add_init_script("window.FLOWSUITE_TEST_MASTER=true")
+    master.goto(BASE)
+    expect(master.get_by_role("heading",name="Estabelecimentos",exact=True)).to_be_visible()
+    expect(master.get_by_role("navigation",name="Administração").get_by_text("Estabelecimentos")).to_be_visible()
+    expect(master.get_by_role("button",name="Automações",exact=True)).to_have_count(0)
+    expect(master.get_by_label("Link da equipe")).to_have_value(BASE+"/?estabelecimento=teste")
+    master.get_by_role("button",name="Integrações",exact=True).click()
+    dialog = master.get_by_role("dialog")
+    expect(dialog.get_by_text("Serviço conectado.",exact=False)).to_be_visible()
+    dialog.get_by_label("Token AVEC").fill("fake-avec")
+    dialog.get_by_role("button",name="Salvar token AVEC").click()
+    expect(dialog.get_by_label("Token AVEC")).to_have_value("")
+    dialog.get_by_label("E-mail Clickmassa").fill("integration@example.test")
+    dialog.get_by_label("ID da empresa no Clickmassa").fill("12")
+    dialog.get_by_label("Senha Clickmassa").fill("fake-password")
+    dialog.get_by_role("button",name="Salvar e sincronizar").click()
+    expect(dialog.get_by_label("Senha Clickmassa")).to_have_value("")
+    expect(dialog.get_by_text("Sincronização solicitada",exact=False).first).to_be_visible()
+    dialog.get_by_label("Canal",exact=True).select_option("c1")
+    dialog.get_by_label("URL de envio").fill("https://example.test/external/mock")
+    dialog.get_by_label("Token de envio").fill("fake-sender")
+    dialog.get_by_label("Liberar envios neste canal").check()
+    dialog.get_by_role("button",name="Salvar canal").click()
+    expect(dialog.get_by_label("Token de envio")).to_have_value("")
+    expect(dialog.get_by_label("Liberar envios neste canal")).to_be_checked()
+    assert master.evaluate("window.testCalls.rpc.map(x=>x.name)") == [
+        "fs_set_avec_token","fs_save_clickmassa_account","fs_save_clickmassa_sender"
+    ]
+
     assert not errors, errors
     browser.close()
-print("PASS browser: desktop e celular, catálogo, formulário legado, fila, histórico e perfil de leitura.")
+print("PASS browser: áreas separadas, credenciais, catálogo, simulação, WABA, QR, envio de teste e perfil de leitura.")

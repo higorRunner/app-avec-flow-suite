@@ -95,3 +95,23 @@ button:disabled{cursor:not-allowed;opacity:.55}
   .modal-footer { flex-wrap: wrap; }
   .manual-grid .select, .manual-grid .input, .modal .select, .modal .input { font-size: 1rem; }
 }
+
+.master-layout .sidebar { background: #102631; }
+.master-layout .brandmark { background: #78debe; color: #102631; }
+.master-layout .nav-link.active { color: #c2ffeb; background: #245143; box-shadow: inset 3px 0 #78debe; }
+.master-account { margin: 0 0 12px; overflow-wrap: anywhere; }
+.master-summary { margin-bottom: 18px; }
+.unit-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.unit-card { display: grid; gap: 18px; align-content: start; }
+.unit-card .card-heading { margin-bottom: 0; align-items: flex-start; }
+.unit-card .input-row .input { min-width: 0; }
+.unit-card .actions a { text-decoration: none; }
+.catalog-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+
+@media (max-width: 1050px) {
+  .unit-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (max-width: 520px) {
+  .catalog-metrics { grid-template-columns: minmax(0, 1fr); }
+}

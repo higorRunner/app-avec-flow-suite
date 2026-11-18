@@ -4,6 +4,7 @@ const el = document.getElementById('app');
 const q = new URLSearchParams(location.search);
 const requestedSlug = q.get('estabelecimento') || location.pathname.match(/\/e\/([a-z0-9-]+)\/?$/)?.[1] || '';
 const assetBase = new URL('.', document.baseURI);
+const masterRoute = q.get('admin') === '1';
 const embedded = q.get('embed') === '1';
 if (embedded) document.body.classList.add('embed-mode');
 const MODULES = [
@@ -16,6 +17,7 @@ const MODULES = [
   {type:'stock',icon:'▣',title:'Alerta de estoque',sub:'Produto esgotado',desc:'Notificação para responsável por produto em falta.'},
   {type:'arrival',icon:'⌁',title:'Aviso de chegada',sub:'Check-in',desc:'Avise um responsável quando um cliente chegar.'}
 ];
+const nativeRuleTypes=new Set(['csat','post_service','return','cross_sell','birthday','inactive']);
 const state = {client:null,user:null,profile:null,session:null,establishments:[],current:null,page:'dashboard',modal:null,modules:[],channels:[],templates:[],services:[],customers:[],jobs:[],logs:[],status:null,editing:null,ticket:null,ticketVerified:false,authMode:'login',navOpen:false,loading:false,avecCatalog:[],avecSearch:'',avecReportCode:'0004', avecStatus:'idle', membershipRole:null, manual:{selected:new Set(), page:0, request:0}, tenantRequest:0, authRequest:0};
 const h = (value) => String(value ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmt = (date) => date ? new Intl.DateTimeFormat('pt-BR',{dateStyle:'short',timeStyle:'short'}).format(new Date(date)):'—';
@@ -110,9 +112,12 @@ async function loadAuth(session){
   state.profile=profile.data;
   state.memberships=memberships.data||[];
   state.establishments=(est.data||[]).filter(item=>item.active||state.profile.master_admin);
-  state.current=state.establishments.find(x=>x.slug===slug)||(!requestedSlug?state.establishments[0]:null)||null;
-  if(requestedSlug&&!state.current) toast('Você não possui acesso a este estabelecimento.',true);
-  await loadTenant();
+  const masterHome=state.profile.master_admin&&(masterRoute||!requestedSlug);
+  state.page=masterHome?'admin':'dashboard';
+  state.current=masterHome?null:state.establishments.find(x=>x.slug===slug&&x.active)||(!requestedSlug?state.establishments.find(x=>x.active):null)||null;
+  if(!masterHome&&q.get('teste')==='1'&&state.current) state.page='manual-test';
+  if(requestedSlug&&!masterHome&&!state.current) toast('Você não possui acesso a este estabelecimento.',true);
+  if(!masterHome) await loadTenant();
   if(request===state.authRequest) render();
  }catch(err){
   if(request!==state.authRequest) return;
@@ -121,6 +126,28 @@ async function loadAuth(session){
  }
 }
 
+const jobColumns='id,created_at,customer_id,source,status,error_message,external_message_id,test_run,customers(name)';
+const recentJobs=query=>query.order('created_at',{ascending:false}).limit(500);
+let refreshingJobs=false;
+
+async function refreshVisibleJobs(){
+ if(document.hidden||state.page!=='reports'||!state.current||state.modal||refreshingJobs) return;
+ const tenant=state.current.id;
+ refreshingJobs=true;
+ try{
+  const jobs=await queryData('message_jobs',recentJobs,jobColumns,tenant);
+  if(state.page==='reports'&&state.current?.id===tenant&&JSON.stringify(jobs)!==JSON.stringify(state.jobs)){
+   const content=document.querySelector('#main-content');
+   if(content){
+    const refreshFocused=document.activeElement?.dataset.action==='refresh';
+    state.jobs=jobs;
+    content.innerHTML=reportsPage();
+    if(refreshFocused) content.querySelector('[data-action="refresh"]')?.focus({preventScroll:true});
+   }
+  }
+ }catch{/* Manual refresh surfaces connection errors. */}
+ finally{refreshingJobs=false}
+}
 async function loadTenant(){
  const request=++state.tenantRequest;
  const tenant=state.current?.id;
@@ -135,7 +162,7 @@ async function loadTenant(){
    queryData('templates',x=>x.order('name')),
    queryData('services',x=>x.order('name'),'id,name,external_id,default_return_days,active'),
    queryData('customers',x=>x.order('name').limit(1000),'id,name,phone'),
-   queryData('message_jobs',x=>x.order('created_at',{ascending:false}).limit(500),'id,created_at,customer_id,source,status,error_message,external_message_id,customers(name)'),
+   queryData('message_jobs',recentJobs,jobColumns),
    queryData('integration_logs',x=>x.order('created_at',{ascending:false}).limit(100),'id,created_at,source,event,status'),
    db().from('integration_status').select('*').eq('establishment_id',tenant).maybeSingle()
   ]);
@@ -157,7 +184,7 @@ function renderAuth(){
   el.innerHTML=`<main class="auth-right"><section class="auth-card"><h1>Definir nova senha</h1><form id="auth-form" class="stack">${field('Nova senha','password','password','','','required minlength="8" autocomplete="new-password"')}${field('Confirme a nova senha','confirm_password','password','','','required minlength="8" autocomplete="new-password"')}<button type="submit" class="btn primary">Salvar nova senha</button></form></section></main>`;
   return;
  }
- el.innerHTML=`<div class="auth-shell"><aside class="auth-art"><div class="brand"><div class="brandmark">✦</div><span>FlowSuite</span></div><div class="auth-hero"><h1>Relacionamentos que <span class="gradient-text">evoluem sozinhos.</span></h1><p>Orquestre mensagens, personalize a jornada do cliente e acompanhe cada resultado em um só lugar.</p></div><span class="muted small">AVEC + Clickmassa + Supabase</span></aside><section class="auth-right"><div class="auth-card"><div class="brand" style="margin-bottom:32px"><div class="brandmark">✦</div> FlowSuite</div><h2>${reset?'Recuperar acesso':signup?'Criar sua conta':'Bem-vindo de volta'}</h2><p class="muted subtitle">${reset?'Enviaremos um link para seu e-mail.':signup?'Confirme seu e-mail antes de entrar.':'Entre na central para acessar seu estabelecimento.'}</p><form id="auth-form">${signup?field('Nome completo','name','text','Seu nome'):''}${field('E-mail','email','email','nome@empresa.com','','required autocomplete="email"')} ${!reset?field('Senha','password','password',signup?'Mínimo de 8 caracteres':'Sua senha'):''}<button class="btn primary" type="submit">${reset?'Enviar link de recuperação':signup?'Criar conta':'Entrar no painel'} →</button></form><div class="center" style="margin-top:23px"><button class="btn ghost small" data-action="auth-mode" data-mode="${signup||reset?'login':'signup'}">${signup||reset?'Voltar ao login':'Criar conta'}</button>${!signup&&!reset?'<button class="btn ghost small" data-action="auth-mode" data-mode="reset">Esqueci minha senha</button>':''}</div></div></section></div>`;
+ el.innerHTML=`<div class="auth-shell"><aside class="auth-art"><div class="brand"><div class="brandmark">✦</div><span>FlowSuite</span></div><div class="auth-hero"><h1>Relacionamentos que <span class="gradient-text">evoluem sozinhos.</span></h1><p>Orquestre mensagens, personalize a jornada do cliente e acompanhe cada resultado em um só lugar.</p></div><span class="muted small">AVEC + Clickmassa + Supabase</span></aside><section class="auth-right"><div class="auth-card"><div class="brand" style="margin-bottom:32px"><div class="brandmark">✦</div> FlowSuite</div><h2>${reset?'Recuperar acesso':signup?'Criar sua conta':masterRoute?'Acesso administrativo':'Bem-vindo de volta'}</h2><p class="muted subtitle">${reset?'Enviaremos um link para seu e-mail.':signup?'Confirme seu e-mail antes de entrar.':masterRoute?'Entre com uma conta de administrador master.':'Entre com sua conta FlowSuite para acessar seu estabelecimento.'}</p><form id="auth-form">${signup?field('Nome completo','name','text','Seu nome'):''}${field('E-mail','email','email','nome@empresa.com','','required autocomplete="email"')} ${!reset?field('Senha','password','password',signup?'Mínimo de 8 caracteres':'Sua senha'):''}<button class="btn primary" type="submit">${reset?'Enviar link de recuperação':signup?'Criar conta':'Entrar no painel'} →</button></form><div class="center" style="margin-top:23px"><button class="btn ghost small" data-action="auth-mode" data-mode="${signup||reset?'login':'signup'}">${signup||reset?'Voltar ao login':'Criar conta'}</button>${!signup&&!reset?'<button class="btn ghost small" data-action="auth-mode" data-mode="reset">Esqueci minha senha</button>':''}</div></div></section></div>`;
 }
 const field=(label,name,type='text',placeholder='',value='',extra='')=>`<div class="field"><label for="${h(name)}">${h(label)}</label><input class="input" id="${h(name)}" name="${h(name)}" type="${type}" placeholder="${h(placeholder)}" value="${h(value)}" ${extra}></div>`;
 const select=(label,name,options=[],value='',extra='')=>`<div class="field"><label for="${h(name)}">${h(label)}</label><select class="select" id="${h(name)}" name="${h(name)}" ${extra}>${options.map(o=>`<option value="${h(o.value)}" ${String(value)===String(o.value)?'selected':''}>${h(o.label)}</option>`).join('')}</select></div>`;
@@ -169,19 +196,19 @@ const activeChannels=()=>state.channels.filter(x=>x.active&&['waba','whatsapp'].
 const activeTemplates=()=>state.templates.filter(x=>x.status==='active');
 const dispatchChannels=()=>activeChannels().filter(channel=>channel.dispatch_ready&&
  (channel.type==='whatsapp'||activeTemplates().some(t=>t.clickmassa_channel_id===channel.id)));
-function navItems(){let items=[['dashboard','◫','Visão geral'],['automations','⚡','Automações'],['manual','➤','Envio manual'],['customers','♙','Clientes e histórico'],['reports','▥','Relatórios e envios'],['catalog','▤','Catálogos e serviços'],['avec','▤','Relatórios AVEC'],['ticket','☷','Atendimento aberto'],['settings','⚙','Configurações']];if(state.profile?.master_admin)items.push(['admin','♜','Painel master']);return items}
+function navItems(){let items=[['dashboard','◫','Visão geral'],['automations','⚡','Automações'],['manual','➤','Envio manual'],['customers','♙','Clientes e histórico'],['reports','▥','Relatórios e envios'],['catalog','▤','Catálogos e serviços'],['avec','▤','Relatórios AVEC'],['ticket','☷','Atendimento aberto'],['settings','⚙','Configurações']];return items}
 function render(){
- if(!state.user){renderAuth();return}const isAdmin=state.page==='admin';let title=isAdmin?'Administração master':state.current?.name||'Nenhum estabelecimento';let main=pageBody();
- el.innerHTML=`<div class="layout"><button type="button" class="nav-scrim" data-action="toggle-nav" aria-label="Fechar menu" ${state.navOpen?'':'hidden'}></button><aside id="main-sidebar" class="sidebar ${state.navOpen?'open':''}"><div class="brand"><div class="brandmark">✦</div><span>FlowSuite</span></div><div><div class="sidebar-caption">Workspace</div>${state.establishments.length?`<select class="select" id="tenant-select" aria-label="Estabelecimento" style="font-size:.79rem">${!state.current?'<option value="" selected disabled>Selecione um estabelecimento</option>':''}${state.establishments.map(x=>`<option value="${h(x.id)}" ${state.current?.id===x.id?'selected':''}>${h(x.name)}</option>`).join('')}</select>`:'<p class="hint">Sem estabelecimentos</p>'}</div><nav class="nav-list" aria-label="Navegação principal"><div class="sidebar-caption">Navegação</div>${navItems().map(([id,ico,name])=>`<button class="nav-link ${state.page===id?'active':''}" data-action="navigate" data-page="${id}" aria-label="${h(name)}" ${state.page===id?'aria-current="page"':''}><span class="nav-icon">${ico}</span><span class="nav-label">${h(name)}</span></button>`).join('')}</nav><div class="sidebar-bottom"><div class="user-mini"><div class="avatar">${h((state.profile?.full_name||state.user.email||'U')[0].toUpperCase())}</div><div style="min-width:0"><strong class="small">${h(state.profile?.full_name||'Usuário')}</strong><div class="muted tiny" style="overflow:hidden;text-overflow:ellipsis">${h(state.user.email)}</div></div></div><button class="nav-link" data-action="logout" aria-label="Sair da conta"><span class="nav-icon">↪</span><span class="logout-label">Sair da conta</span></button></div></aside><div class="main"><header class="topbar"><div class="actions"><button class="btn ghost mobile-menu" data-action="toggle-nav" aria-label="Menu" aria-controls="main-sidebar" aria-expanded="${state.navOpen}">☰</button><div><strong>${h(isAdmin?'Painel master':title)}</strong><div class="muted tiny">${isAdmin?'Controle de estabelecimentos e acessos':'Central de automações e relacionamento'}</div></div></div><div class="topbar-right"><span class="pill ${state.current?.active===false?'off':''}">● ${state.current?.active===false?'Desativado':'Conectado'}</span><span class="avatar">${h((state.user.email||'U')[0].toUpperCase())}</span></div></header><main class="content" id="main-content">${main}</main></div></div>`;
+ if(!state.user){renderAuth();return}if(state.page==='admin'&&state.profile?.master_admin){renderMaster();return}const isAdmin=false;let title=isAdmin?'Administração master':state.current?.name||'Nenhum estabelecimento';let main=pageBody();
+ el.innerHTML=`<div class="layout"><button type="button" class="nav-scrim" data-action="toggle-nav" aria-label="Fechar menu" ${state.navOpen?'':'hidden'}></button><aside id="main-sidebar" class="sidebar ${state.navOpen?'open':''}"><div class="brand"><div class="brandmark">✦</div><span>FlowSuite</span></div><div><div class="sidebar-caption">Workspace</div>${state.establishments.length?`<select class="select" id="tenant-select" aria-label="Estabelecimento" style="font-size:.79rem">${!state.current?'<option value="" selected disabled>Selecione um estabelecimento</option>':''}${state.establishments.filter(x=>x.active).map(x=>`<option value="${h(x.id)}" ${state.current?.id===x.id?'selected':''}>${h(x.name)}</option>`).join('')}</select>`:'<p class="hint">Sem estabelecimentos</p>'}</div><nav class="nav-list" aria-label="Navegação principal"><div class="sidebar-caption">Navegação</div>${navItems().map(([id,ico,name])=>`<button class="nav-link ${(state.page===id||(id==='manual'&&state.page==='manual-test'))?'active':''}" data-action="navigate" data-page="${id}" aria-label="${h(name)}" ${state.page===id?'aria-current="page"':''}><span class="nav-icon">${ico}</span><span class="nav-label">${h(name)}</span></button>`).join('')}</nav><div class="sidebar-bottom">${state.profile?.master_admin?'<a class="nav-link" href="/?admin=1">Voltar ao painel master</a>':''}<div class="user-mini"><div class="avatar">${h((state.profile?.full_name||state.user.email||'U')[0].toUpperCase())}</div><div style="min-width:0"><strong class="small">${h(state.profile?.full_name||'Usuário')}</strong><div class="muted tiny" style="overflow:hidden;text-overflow:ellipsis">${h(state.user.email)}</div></div></div><button class="nav-link" data-action="logout" aria-label="Sair da conta"><span class="nav-icon">↪</span><span class="logout-label">Sair da conta</span></button></div></aside><div class="main"><header class="topbar"><div class="actions"><button class="btn ghost mobile-menu" data-action="toggle-nav" aria-label="Menu" aria-controls="main-sidebar" aria-expanded="${state.navOpen}">☰</button><div><strong>${h(isAdmin?'Painel master':title)}</strong><div class="muted tiny">${isAdmin?'Controle de estabelecimentos e acessos':'Central de automações e relacionamento'}</div></div></div><div class="topbar-right"><span class="pill ${state.current?.active===false?'off':''}">● ${state.current?.active===false?'Desativado':'Conectado'}</span><span class="avatar">${h((state.user.email||'U')[0].toUpperCase())}</span></div></header><main class="content" id="main-content">${main}</main></div></div>`;
  const manualForm=document.getElementById('manual-form');
- if(manualForm){updateManualChannel(manualForm);syncRecipientSelection(manualForm);void loadContactPage(true)}
+ if(manualForm){updateManualChannel(manualForm);syncRecipientSelection(manualForm);if(!manualForm.dataset.testRun) void loadContactPage(true)}
  if(state.page==='customers') void loadContactPage(false);
  if(state.page==='avec'&&state.avecStatus==='idle') void loadAvecCatalog();
  if(state.modal) showModal();
 }
 const head=(title,desc,action='')=>`<div class="page-head"><div><h1>${h(title)}</h1><p>${h(desc)}</p></div><div class="actions">${action}</div></div>`;
 const button=(label,action,attr='',variant='primary')=>`<button class="btn ${variant}" type="button" data-action="${action}" ${attr}>${label}</button>`;
-function pageBody(){if(state.page==='admin')return adminPage();if(state.loading)return '<p class="card" role="status">Carregando estabelecimento…</p>';if(state.tenantError)return `<div class="alert">Alguns dados não puderam ser carregados. ${button('Tentar novamente','refresh','','small')}</div>`;if(!state.current)return `${head('Comece por um estabelecimento','Solicite acesso ao administrador master ou cadastre o primeiro estabelecimento.')}${state.profile?.master_admin?button('+ Cadastrar estabelecimento','add-establishment'):''}`;switch(state.page){case'dashboard':return dashboardPage();case'automations':return automationsPage();case'manual':return manualPage();case'customers':return customersPage();case'reports':return reportsPage();case'catalog':return catalogPage();case'avec':return avecPage();case'ticket':return ticketPage();case'settings':return settingsPage();default:return dashboardPage()}}
+function pageBody(){if(state.loading)return '<p class="card" role="status">Carregando estabelecimento…</p>';if(state.tenantError)return `<div class="alert">Alguns dados não puderam ser carregados. ${button('Tentar novamente','refresh','','small')}</div>`;if(!state.current)return `${head('Comece por um estabelecimento','Solicite acesso ao administrador master ou cadastre o primeiro estabelecimento.')}`;switch(state.page){case'dashboard':return dashboardPage();case'automations':return automationsPage();case'manual':return manualPage();case'manual-test':return manualPage();case'customers':return customersPage();case'reports':return reportsPage();case'catalog':return catalogPage();case'avec':return avecPage();case'ticket':return ticketPage();case'settings':return settingsPage();default:return dashboardPage()}}
 function setupChecklist(){
  const steps=[
   {ok:!!state.status?.avec_configured,label:'Conectar AVEC',sub:'Cadastre o token da unidade no painel master.',page:state.profile?.master_admin?'admin':'settings'},
@@ -194,9 +221,9 @@ function setupChecklist(){
  if(done===steps.length) return '';
  return `<section class="setup-panel" aria-label="Preparação do estabelecimento"><div class="setup-copy"><h2>Deixe sua operação pronta para enviar</h2><p>Configure as integrações uma vez. Depois, cada automação utiliza seu próprio canal e template.</p><div class="setup-progress"><span style="width:${Math.round(done/steps.length*100)}%"></span></div><small>${done} de ${steps.length} etapas configuradas</small></div><div class="setup-list">${steps.map((s,i)=>`<button class="setup-step ${s.ok?'done':''}" data-action="navigate" data-page="${s.page}"><span class="step-index">${s.ok?'✓':i+1}</span><span><strong>${h(s.label)}</strong><small>${h(s.sub)}</small></span><span aria-hidden="true">↗</span></button>`).join('')}</div></section>`;
 }
-function dashboardPage(){let active=state.modules.filter(a=>a.enabled).length,sent=state.jobs.filter(a=>['sent','delivered','read'].includes(a.status)).length,failed=state.jobs.filter(a=>a.status==='failed').length;
- return `${head('Visão geral','Sua operação, campanhas e integrações em um só lugar.',canManage()?button('＋ Nova automação','new-automation'):'')}${setupChecklist()}<div class="metrics"><div class="card metric-card"><span class="metric-icon">⚡</span><div class="metric">${numeric(active)}</div><span class="eyebrow">Automações ativas</span></div><div class="card metric-card"><span class="metric-icon">➤</span><div class="metric">${numeric(sent)}</div><span class="eyebrow">Mensagens enviadas*</span></div><div class="card metric-card"><span class="metric-icon">♙</span><div class="metric">${numeric(state.customers.length)}</div><span class="eyebrow">Clientes sincronizados*</span></div><div class="card metric-card"><span class="metric-icon">⚠</span><div class="metric">${numeric(failed)}</div><span class="eyebrow">Falhas registradas*</span></div></div><div class="grid2"><section class="card"><div class="card-heading"><h2>Suas automações</h2>${button('Ver todas','navigate','data-page="automations"','small')}</div>${state.modules.length?state.modules.slice(0,6).map(a=>`<div class="list-row"><div><strong>${h(a.name)}</strong><div class="muted small">${h(mod(a.type).title)}</div></div><span class="badge ${a.enabled?'green':''}">${a.enabled?'Ativa':'Pausada'}</span></div>`).join(''):empty('Nenhuma automação','Configure a primeira regra de envio.')}</section><section class="card"><div class="card-heading"><h2>Integrações</h2>${button('Configurações','navigate','data-page="settings"','small')}</div><div class="list-row"><span>AVEC</span><span class="badge ${state.status?.avec_configured?'green':'amber'}">${state.status?.avec_configured?'Configurado':'Pendente'}</span></div><div class="list-row"><span>Clickmassa / CRM</span><span class="badge ${state.status?.clickmassa_configured?'green':'amber'}">${state.status?.clickmassa_configured?'Configurado':'Pendente'}</span></div><div class="list-row"><span>Canais sincronizados</span><strong>${state.channels.length}</strong></div><div class="list-row"><span>Templates disponíveis</span><strong>${state.templates.length}</strong></div><p class="hint" style="margin-top:17px">* Indicadores baseados nos registros sincronizados para este painel. Para grandes volumes, use agregações no banco.</p></section></div>`}
-function automationsPage(){const cards=MODULES.map(m=>{const count=state.modules.filter(a=>a.type===m.type).length;return `<section class="card module"><div><div class="module-top"><span class="module-icon">${m.icon}</span><span class="badge ${count?'green':''}">${count} regra(s)</span></div><h3 style="margin-top:16px">${m.title}</h3><p>${m.desc}</p></div><div class="footer"><span class="muted tiny">${h(m.sub)}</span>${canManage()?button('+ Configurar','new-automation',`data-type="${m.type}"`,'small'):''}</div></section>`}).join('');return `${head('Automações','As regras ficam salvas. O disparo automático depende da validação dos eventos do AVEC.',canManage()?button('＋ Nova regra','new-automation'):'')}<div class="module-grid">${cards}</div><div class="section-title"><h2>Regras cadastradas</h2></div><section class="card">${state.modules.length?table(['Nome','Tipo','Canal','Template','Status','Ações'],state.modules.map(a=>[h(a.name),h(mod(a.type).title),h(state.channels.find(x=>x.id===a.channel_id)?.name||'—'),h(state.templates.find(x=>x.id===a.template_id)?.name||'—'),`<span class="badge ${a.enabled?'green':''}">${a.enabled?'Ativa':'Pausada'}</span>`,`${canManage()?`${button('Editar','edit-automation',`data-id="${h(a.id)}"`,'small')} ${button(a.enabled?'Pausar':'Ativar','toggle-automation',`data-id="${h(a.id)}"`,'small')} ${button('Excluir','delete-automation',`data-id="${h(a.id)}"`,'small danger')}`:'—'}`])):empty('Sem regras','Crie uma configuração para começar.')}</section>`}
+function dashboardPage(){let active=state.modules.filter(a=>a.enabled&&a.native_armed_at).length,sent=state.jobs.filter(a=>['sent','delivered','read'].includes(a.status)).length,failed=state.jobs.filter(a=>a.status==='failed').length;
+ return `${head('Visão geral','Sua operação, campanhas e integrações em um só lugar.',canManage()?button('＋ Nova automação','new-automation'):'')}${setupChecklist()}<div class="metrics"><div class="card metric-card"><span class="metric-icon">⚡</span><div class="metric">${numeric(active)}</div><span class="eyebrow">Automações ativas</span></div><div class="card metric-card"><span class="metric-icon">➤</span><div class="metric">${numeric(sent)}</div><span class="eyebrow">Mensagens enviadas*</span></div><div class="card metric-card"><span class="metric-icon">♙</span><div class="metric">${numeric(state.customers.length)}</div><span class="eyebrow">Clientes sincronizados*</span></div><div class="card metric-card"><span class="metric-icon">⚠</span><div class="metric">${numeric(failed)}</div><span class="eyebrow">Falhas registradas*</span></div></div><div class="grid2"><section class="card"><div class="card-heading"><h2>Suas automações</h2>${button('Ver todas','navigate','data-page="automations"','small')}</div>${state.modules.length?state.modules.slice(0,6).map(a=>`<div class="list-row"><div><strong>${h(a.name)}</strong><div class="muted small">${h(mod(a.type).title)}</div></div><span class="badge ${a.enabled&&a.native_armed_at?'green':''}">${a.enabled?(a.native_armed_at?'Ativa':'Revisar ativação'):'Pausada'}</span></div>`).join(''):empty('Nenhuma automação','Configure a primeira regra de envio.')}</section><section class="card"><div class="card-heading"><h2>Integrações</h2>${button('Configurações','navigate','data-page="settings"','small')}</div><div class="list-row"><span>AVEC</span><span class="badge ${state.status?.avec_configured?'green':'amber'}">${state.status?.avec_configured?'Configurado':'Pendente'}</span></div><div class="list-row"><span>Clickmassa / CRM</span><span class="badge ${state.status?.clickmassa_configured?'green':'amber'}">${state.status?.clickmassa_configured?'Configurado':'Pendente'}</span></div><div class="list-row"><span>Canais sincronizados</span><strong>${state.channels.length}</strong></div><div class="list-row"><span>Templates disponíveis</span><strong>${state.templates.length}</strong></div><p class="hint" style="margin-top:17px">* Indicadores baseados nos registros sincronizados para este painel. Para grandes volumes, use agregações no banco.</p></section></div>`}
+function automationsPage(){const cards=MODULES.map(m=>{const count=state.modules.filter(a=>a.type===m.type).length;return `<section class="card module"><div><div class="module-top"><span class="module-icon">${m.icon}</span><span class="badge ${count?'green':''}">${count} regra(s)</span></div><h3 style="margin-top:16px">${m.title}</h3><p>${m.desc}</p></div><div class="footer"><span class="muted tiny">${h(m.sub)}</span>${canManage()?button('+ Configurar','new-automation',`data-type="${m.type}"`,'small'):''}</div></section>`}).join('');return `${head('Automações','Configure regras para os clientes e agendamentos já disponíveis na unidade.',canManage()?button('＋ Nova regra','new-automation'):'')}<div class="module-grid">${cards}</div><div class="section-title"><h2>Regras cadastradas</h2></div><section class="card">${state.modules.length?table(['Nome','Tipo','Canal','Template','Status','Ações'],state.modules.map(a=>[h(a.name),h(mod(a.type).title),h(state.channels.find(x=>x.id===a.channel_id)?.name||'—'),h(state.templates.find(x=>x.id===a.template_id)?.name||'—'),`<span class="badge ${a.enabled&&a.native_armed_at?'green':''}">${a.enabled?(a.native_armed_at?'Ativa':'Revisar ativação'):'Pausada'}</span>`,`${canManage()?`${button('Editar','edit-automation',`data-id="${h(a.id)}"`,'small')} ${nativeRuleTypes.has(a.type)?button('Simular','preview-automation',`data-id="${h(a.id)}"`,'small'):''} ${button(a.enabled&&a.native_armed_at?'Pausar':'Ativar','toggle-automation',`data-id="${h(a.id)}"`,'small')} ${button('Excluir','delete-automation',`data-id="${h(a.id)}"`,'small danger')}`:'—'}`])):empty('Sem regras','Crie uma configuração para começar.')}</section>`}
 const table=(cols,rows)=>`<div class="table-wrap" tabindex="0" role="region" aria-label="Tabela com rolagem"><table class="table"><thead><tr>${cols.map(c=>`<th scope="col">${h(c)}</th>`).join('')}</tr></thead><tbody>${rows.map(row=>`<tr>${row.map(c=>`<td>${c}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
 const empty=(title,desc)=>`<div class="empty"><span class="emoji">◇</span><strong>${h(title)}</strong><span class="small">${h(desc)}</span></div>`;
 const sampleFields = [
@@ -236,10 +263,19 @@ function variablePanel(form, mapping = {}, previous) {
   target.innerHTML='<p class="hint">Escolha um modelo para ver a mensagem e seus campos.</p>';
   return;
  }
+ if(form.dataset.testRun==='true'){
+  target.innerHTML=`<div class="message-preview"><strong>Prévia da mensagem</strong><p data-template-preview></p></div>${
+   [...variableKeys(template,{})].map(([key],index)=>
+    field(`Valor de teste do campo ${key}`,`test-param-${index}`,'text','Informe um valor de exemplo','','required maxlength="1024" data-test-param')).join('')
+  }`;
+  updateMessagePreview(form);
+  return;
+ }
  const manual=form.id==='manual-form';
  const fields=sampleFields.filter(x=>manual
   ? !x.value.startsWith('appointment.')&&!x.value.startsWith('product.')&&(form.elements.service_id.value||x.value!=='service.name')
-  : form.elements.type.value==='stock'||!x.value.startsWith('product.'));
+  : form.elements.type.value==='stock'||(!x.value.startsWith('product.')&&
+    (form.elements.type.value!=='birthday'||(!x.value.startsWith('appointment.')&&x.value!=='service.name'))));
  target.innerHTML=`<div class="message-preview"><strong>Prévia da mensagem</strong><p data-template-preview></p></div>${
   [...variableKeys(template,mapping)].map(([key,label],index)=>{
    const saved=mapping[key];
@@ -266,17 +302,21 @@ function updateMessagePreview(form) {
  if(!preview) return;
  const template=state.templates.find(x=>x.id===form.elements.template_id.value);
  const mapping=readVariableMapping(form);
+ const testValues=[...form.querySelectorAll('[data-test-param]')].map(input=>input.value.trim());
  preview.textContent=template.body?.replace(/\{\{\s*([^{}]+?)\s*\}\}/g,(_token,key)=>{
+  if(form.dataset.testRun==='true') return testValues[Number(key)-1]||`[${key}]`;
   const value=Object.hasOwn(mapping,key)?mapping[key]:null;
   return sampleFields.find(x=>x.value===value)?.example||`[${key}]`;
  })||'O texto deste modelo ainda não foi sincronizado.';
 }
 
 function manualPage(){
- return `${head('Envio manual','Escolha o canal, personalize a mensagem e selecione os destinatários.')}
+ const test=state.page==='manual-test';
+ return `${head(test?'Envio de teste':'Envio manual',test?'Valide um canal com um contato autorizado da equipe.':'Escolha o canal, personalize a mensagem e selecione os destinatários.',
+ test?button('Voltar ao envio manual','navigate','data-page="manual"','small'):button('Envio de teste','navigate','data-page="manual-test"','small'))}
  ${!canSend()?'<p class="alert">Um operador ou gestor pode adicionar mensagens à fila.</p>':
  !dispatchChannels().length?`<div class="alert">Nenhum canal está pronto para enviar. Confira a integração no catálogo. ${button('Abrir catálogos','navigate','data-page="catalog"','small')}</div>`:
- `<form id="manual-form" class="stack">
+ `<form id="manual-form" class="stack" ${test?'data-test-run="true"':''}>
  <div class="grid2 manual-grid"><section class="card stack"><h2>Mensagem</h2>
  ${select('Canal','channel_id',[opt('','Selecione um canal'),...dispatchChannels().map(x=>opt(x.id,`${x.name} · ${x.type==='waba'?'Oficial':'QR Code'}`))],'','required')}
  <div class="stack" data-manual-template hidden>
@@ -286,15 +326,19 @@ function manualPage(){
  <div class="field"><label for="manual-body">Mensagem</label><textarea id="manual-body" name="body" class="textarea" rows="5" maxlength="4096" disabled></textarea></div>
  <div class="field"><label for="manual-note">Nota interna (opcional)</label><textarea id="manual-note" name="note" class="textarea" rows="2" maxlength="1000" disabled></textarea><p class="hint">Visível para a equipe de atendimento.</p></div>
  </div>
- </section><section class="card stack"><h2>Destinatários</h2>
+ </section><section class="card stack">${test?`<h2>Contato de teste</h2>
+ ${field('Número com DDI','test_phone','tel','+55 11 99999-0000','','required autocomplete="off" maxlength="25"')}
+ <p class="hint">Use um número da equipe que autorizou este teste.</p>`:`<h2>Destinatários</h2>
+
  ${select('Serviço já realizado','service_id',[opt('','Todos os serviços'),...state.services.map(x=>opt(x.id,x.name))])}
  ${field('Buscar por nome ou telefone','customer-search','search','Ex. Mariana ou 1199999')}
  <div class="selection-bar"><strong id="manual-count" aria-live="polite">0 selecionados</strong>${button('Limpar seleção','clear-recipients','','small')}</div>
  <div id="manual-customers" class="recipient-list" aria-busy="true"></div>
  <div class="pager" id="manual-pager" aria-label="Páginas de clientes"></div>
+` }
  </section></div>
- <section class="card stack"><label class="check-row"><input type="checkbox" name="confirm_consent" required>Confirmo que os destinatários autorizaram este envio.</label>
- <div class="actions"><button class="btn primary" type="submit" disabled>Adicionar à fila</button><span class="hint">O FlowSuite processa a fila e registra a resposta do Clickmassa.</span></div></section>
+ <section class="card stack"><label class="check-row"><input type="checkbox" name="confirm_consent" required>${test?'Confirmo que o contato da equipe autorizou a mensagem de teste.':'Confirmo que os destinatários autorizaram este envio.'}</label>
+ <div class="actions"><button class="btn primary" type="submit" disabled>${test?'Enviar teste':'Adicionar à fila'}</button><span class="hint">O FlowSuite processa a fila e registra a resposta do Clickmassa.</span></div></section>
  </form>`}`;
 }
 
@@ -332,6 +376,10 @@ let contactSearchTimer;
 
 function syncRecipientSelection(form){
  if(!form?.isConnected) return;
+ if(form.dataset.testRun==='true'){
+  form.querySelector('[type="submit"]').disabled=form.dataset.submitting==='true';
+  return;
+ }
  const count=state.manual.selected.size;
  form.querySelector('#manual-count').textContent=`${count} ${count===1?'selecionado':'selecionados'} de 100`;
  const locked=form.dataset.submitting==='true';
@@ -380,8 +428,42 @@ async function loadContactPage(manualMode){
 }
 
 function customerTable(list){return list.length?table(['Cliente','Telefone','Aniversário','Consentimento','Ação'],list.map(c=>[h(c.name),h(c.phone||'—'),h(c.birthday?dateOnly(c.birthday+'T12:00:00'):'—'),`<span class="badge ${c.marketing_opt_in&&!c.opted_out_at?'green':'amber'}">${c.marketing_opt_in&&!c.opted_out_at?'Autorizado':'Não autorizado'}</span>`,button('Histórico','customer-detail',`data-id="${h(c.id)}"`,'small')])):empty('Nenhum cliente encontrado','Confira a origem dos clientes desta unidade.')}
-function reportsPage(){return `${head('Relatórios de envios','Acompanhe mensagens, falhas e execução das rotinas.',button('↻ Atualizar','refresh','','small'))}<div class="metrics"><div class="card"><span class="muted small">Na fila</span><div class="metric">${state.jobs.filter(j=>j.status==='queued').length}</div></div><div class="card"><span class="muted small">Aguardando confirmação</span><div class="metric">${state.jobs.filter(j=>j.status==='processing').length}</div></div><div class="card"><span class="muted small">Enviadas</span><div class="metric">${state.jobs.filter(j=>['sent','delivered','read'].includes(j.status)).length}</div></div><div class="card"><span class="muted small">Falhas</span><div class="metric">${state.jobs.filter(j=>j.status==='failed').length}</div></div><div class="card"><span class="muted small">Ignoradas</span><div class="metric">${state.jobs.filter(j=>j.status==='skipped').length}</div></div></div><section class="card"><div class="card-heading"><h2>Últimas mensagens</h2><span class="muted small">Até 500 registros</span></div>${state.jobs.length?table(['Data','Cliente','Origem','Status','Protocolo','Detalhe'],state.jobs.map(j=>[h(fmt(j.created_at)),h(state.customers.find(c=>c.id===j.customer_id)?.name||'—'),h(j.source),`<span class="badge ${['sent','delivered','read'].includes(j.status)?'green':j.status==='failed'?'red':'amber'}">${h(statusLabel(j.status))}</span>`,`<span class="code">${h(j.external_message_id||j.id)}</span>`,h(j.error_message||'—')])):empty('Sem envios registrados','Os registros aparecerão após a primeira execução.')}</section><div class="section-title"><h2>Logs de integração</h2></div><section class="card">${state.logs.length?table(['Data','Fonte','Evento','Status'],state.logs.map(l=>[h(fmt(l.created_at)),h(l.source),h(l.event),h(l.status)])):empty('Sem logs','Os registros de integração aparecem aqui.')}</section>`}
-function catalogPage(){return `${head('Catálogos e serviços','Confira os canais e os modelos sincronizados pelo FlowSuite.',button('↻ Recarregar dados','refresh','','small'))}<div class="grid2"><section class="card"><div class="card-heading"><h2>Canais (${state.channels.length})</h2></div>${state.channels.length?table(['Nome','Tipo','Estado','Código'],state.channels.map(c=>[h(c.name),h(c.type==='waba'?'Oficial':c.type==='whatsapp'?'QR Code':c.type),c.dispatch_ready?'Pronto para enviar':c.active?'Aguardando configuração':'Desconectado',h(c.external_id)])):empty('Sem canais','Configure a sincronização Clickmassa.')}</section><section class="card"><div class="card-heading"><h2>Templates (${state.templates.length})</h2></div>${state.templates.length?table(['Nome','Status','Variáveis'],state.templates.map(t=>[h(t.name),h(t.status==='active'?'Disponível':t.status==='unsupported'?'Formato pendente de validação':'Indisponível'),h(Array.isArray(t.variables)?t.variables.length:0)])):empty('Sem templates','Configure a sincronização Clickmassa.')}</section></div><div class="section-title"><h2>Serviços do AVEC</h2></div><section class="card">${state.services.length?table(['Serviço','ID AVEC','Retorno médio','Ação'],state.services.map(s=>[h(s.name),h(s.external_id),h(s.default_return_days??'Não definido')+' dias',canManage()?button('Definir retorno','service-return',`data-id="${h(s.id)}"`,'small'):'—'])):empty('Sem serviços','Os serviços aparecem após a importação desta unidade.')}</section>`}
+function reportsPage(){return `${head('Relatórios de envios','Acompanhe mensagens, falhas e execução das rotinas.',button('↻ Atualizar','refresh','','small'))}<div class="metrics"><div class="card"><span class="muted small">Na fila</span><div class="metric">${state.jobs.filter(j=>j.status==='queued').length}</div></div><div class="card"><span class="muted small">Aguardando confirmação</span><div class="metric">${state.jobs.filter(j=>j.status==='processing').length}</div></div><div class="card"><span class="muted small">Enviadas</span><div class="metric">${state.jobs.filter(j=>['sent','delivered','read'].includes(j.status)).length}</div></div><div class="card"><span class="muted small">Falhas</span><div class="metric">${state.jobs.filter(j=>j.status==='failed').length}</div></div><div class="card"><span class="muted small">Ignoradas</span><div class="metric">${state.jobs.filter(j=>j.status==='skipped').length}</div></div></div><section class="card"><div class="card-heading"><h2>Últimas mensagens</h2><span class="muted small">Até 500 registros</span></div>${state.jobs.length?table(['Data','Cliente','Origem','Status','Protocolo','Detalhe'],state.jobs.map(j=>[h(fmt(j.created_at)),h(j.test_run?'Contato de teste':j.customers?.name||state.customers.find(c=>c.id===j.customer_id)?.name||'—'),h(j.test_run?'Teste':j.source==='manual'?'Manual':'Automação'),`<span class="badge ${['sent','delivered','read'].includes(j.status)?'green':j.status==='failed'?'red':'amber'}">${h(statusLabel(j.status))}</span>`,`<span class="code">${h(j.external_message_id||j.id)}</span>`,h(j.error_message||'—')])):empty('Sem envios registrados','Os registros aparecerão após a primeira execução.')}</section><div class="section-title"><h2>Logs de integração</h2></div><section class="card">${state.logs.length?table(['Data','Fonte','Evento','Status'],state.logs.map(l=>[h(fmt(l.created_at)),h(l.source),h(l.event),h(l.status)])):empty('Sem logs','Os registros de integração aparecem aqui.')}</section>`}
+let catalogChannel='';
+function catalogModels(){
+ const models=state.templates.filter(t=>!catalogChannel||t.clickmassa_channel_id===catalogChannel);
+ return models.length?table(['Modelo','Canal','Estado','Campos'],models.map(t=>[
+  h(t.name),h(state.channels.find(c=>c.id===t.clickmassa_channel_id)?.name||'—'),
+  h(t.status==='active'?'Disponível':t.status==='unsupported'?'Formato pendente de validação':'Indisponível'),
+  h(Array.isArray(t.variables)?t.variables.length:0)
+ ])):empty('Sem modelos neste filtro','Confira o canal selecionado e a integração do catálogo.');
+}
+function catalogPage(){
+ const routes=activeChannels();
+ const lastSync=state.status?.last_clickmassa_sync;
+ const channelRows=state.channels.map(c=>[
+  h(c.name),h(c.type==='waba'?'Oficial':c.type==='whatsapp'?'QR Code':c.type),
+  `<span class="badge ${c.dispatch_ready?'green':'amber'}">${c.dispatch_ready?'Pronto para enviar':c.active?'Aguardando credenciais':'Desconectado'}</span>`,
+  h(c.external_id)
+ ]);
+ return `${head('Catálogos e serviços',lastSync?`Clickmassa sincronizado em ${fmt(lastSync)}.`:'Aguardando a primeira sincronização do Clickmassa.',
+  button('Atualizar catálogo','refresh','','small'))}
+ <div class="metrics catalog-metrics">
+  <div class="card"><span class="muted small">Canais</span><div class="metric">${numeric(state.channels.length)}</div></div>
+  <div class="card"><span class="muted small">Prontos para enviar</span><div class="metric">${numeric(dispatchChannels().length)}</div></div>
+  <div class="card"><span class="muted small">Modelos disponíveis</span><div class="metric">${numeric(activeTemplates().length)}</div></div>
+ </div>
+ <div class="stack"><section class="card stack"><h2>Canais</h2>${channelRows.length?table(['Canal','Tipo','Estado','Código'],channelRows):
+ empty('Sem canais importados','O painel master pode conferir o estado da sincronização.')}</section>
+ <section class="card stack"><h2>Modelos de mensagem</h2>
+ ${select('Filtrar por canal','catalog_channel',[opt('','Todos os canais'),...routes.filter(c=>c.type==='waba').map(c=>opt(c.id,c.name))],catalogChannel)}
+ <div id="catalog-models">${catalogModels()}</div></section>
+ <section class="card stack"><h2>Serviços AVEC</h2>
+ ${state.services.length?table(['Serviço','ID AVEC','Retorno padrão','Ação'],state.services.map(s=>[
+ h(s.name),h(s.external_id),s.default_return_days?h(s.default_return_days)+' dias':'—',
+ canManage()?button('Definir retorno','service-return',`data-id="${h(s.id)}"`,'small'):'—'
+ ])):empty('Sem serviços importados','Os serviços ficam disponíveis quando os dados da unidade são importados.')}</section></div>`;
+}
 function avecPage(){
  if(state.avecStatus!=='ready') return `${head('Relatórios AVEC','Pesquise relatórios por código ou assunto.')}${state.avecStatus==='error'?`<div class="alert">O catálogo está indisponível. ${button('Tentar novamente','retry-avec','','small')}</div>`:'<p class="card" role="status">Carregando catálogo…</p>'}`;
  const reports=state.avecCatalog;
@@ -408,16 +490,141 @@ function filterAvec(search){
 
 function ticketPage(){const t=state.ticket;return `${head('Atendimento aberto','Contexto recebido via window.postMessage, quando disponibilizado pelo CRM.')}${!t?'<div class="alert info">Aguardando contexto do atendimento. Abra o plugin no ticket do CRM e configure a origem autorizada no config.js.</div>':`<div class="grid2"><div class="card"><div class="card-heading"><h2>Contexto do ticket</h2><span class="badge ${state.ticketVerified?'green':'amber'}">${state.ticketVerified?'Origem autorizada':'Não verificado'}</span></div><div class="ticket-info"><div><span>ID do ticket</span><strong>${h(t.ticketId||'—')}</strong></div><div><span>ID do contato</span><strong>${h(t.contactId||'—')}</strong></div><div><span>Telefone</span><strong>${h(t.phone||'—')}</strong></div><div><span>Origem informada</span><strong>${h(t.origin||'—')}</strong></div></div><p class="hint" style="margin-top:14px">Dados de postMessage são contexto visual, não prova de identidade do cliente. Valide qualquer operação sensível pelo servidor.</p></div><section class="card"><h2>Histórico vinculado</h2>${ticketCustomerHistory(t)}</section></div>`}`}
 function ticketCustomerHistory(t){const digits=String(t.phone||'').replace(/\D/g,'');if(digits.length<10)return empty('Sem correspondência','O CRM precisa enviar um telefone válido, ou será necessário um endpoint de vínculo pelo ticket ID.');const found=state.customers.filter(c=>String(c.phone||'').replace(/\D/g,'').replace(/^55(?=\d{10,11}$)/,'')===digits.replace(/^55(?=\d{10,11}$)/,''));return found.length===1?`<p style="margin:12px 0"><strong>${h(found[0].name)}</strong></p>${button('Visualizar histórico','customer-detail',`data-id="${h(found[0].id)}"`,'small')}`:empty('Cliente não encontrado','Confira a sincronização e a normalização dos telefones.')}
-function settingsPage(){return `${head('Configurações','Personalização do ambiente e status das integrações.') }<div class="grid2"><section class="card"><h2 style="margin-bottom:17px">Estabelecimento</h2><div class="list-row"><span class="muted">Nome</span><strong>${h(state.current.name)}</strong></div><div class="list-row"><span class="muted">Identificador</span><span class="code">${h(state.current.id)}</span></div><div class="list-row"><span class="muted">Fuso horário</span><strong>${h(state.current.timezone)}</strong></div><div class="field" style="margin-top:20px"><label>Link deste estabelecimento</label><div class="input-row"><input class="input" readonly value="${h(tenantUrl(state.current.slug))}">${button('Copiar','copy-link','','small')}</div></div></section><section class="card"><h2 style="margin-bottom:17px">Integrações</h2><div class="list-row"><span>AVEC</span><span class="badge ${state.status?.avec_configured?'green':'amber'}">${state.status?.avec_configured?'Configurado':'Pendente'}</span></div><div class="list-row"><span>Clickmassa</span><span class="badge ${state.status?.clickmassa_configured?'green':'amber'}">${state.status?.clickmassa_configured?'Configurado':'Pendente'}</span></div><div class="list-row"><span>Última coleta AVEC</span><span class="small">${h(fmt(state.status?.last_avec_snapshot||state.status?.last_avec_sync))}</span></div><div class="list-row"><span>Última sync CRM</span><span class="small">${h(fmt(state.status?.last_clickmassa_sync))}</span></div><div class="alert info" style="margin-top:20px">A conta de catálogo e as credenciais de envio do Clickmassa são configuradas no serviço privado do FlowSuite. O token AVEC é gerenciado no painel master.</div></section></div>`}
-function adminPage(){if(!state.profile?.master_admin)return empty('Acesso restrito','Somente administradores master podem acessar esta área.');return `${head('Painel master','Gerencie estabelecimentos, o token AVEC e acessos.',button('＋ Novo estabelecimento','add-establishment'))}<div class="metrics"><div class="card"><span class="muted small">Estabelecimentos</span><div class="metric">${state.establishments.length}</div></div><div class="card"><span class="muted small">Ativos</span><div class="metric">${state.establishments.filter(x=>x.active).length}</div></div><div class="card"><span class="muted small">Desativados</span><div class="metric">${state.establishments.filter(x=>!x.active).length}</div></div><div class="card"><span class="muted small">Workspace atual</span><div class="metric" style="font-size:1.12rem">${h(state.current?.name||'—')}</div></div></div><section class="card"><div class="card-heading"><h2>Estabelecimentos cadastrados</h2></div>${state.establishments.length?table(['Estabelecimento','Link','Status','Ações'],state.establishments.map(e=>[h(e.name),`<div class="copy-link"><a href="${h(tenantUrl(e.slug))}" target="_blank" rel="noopener">${h(tenantUrl(e.slug))}</a></div>`,`<span class="badge ${e.active?'green':'red'}">${e.active?'Ativo':'Inativo'}</span>`,`${button('Credenciais','credentials',`data-id="${h(e.id)}"`,'small')} ${button('Acesso','grant-access',`data-id="${h(e.id)}"`,'small')} ${button(e.active?'Desativar':'Ativar','toggle-establishment',`data-id="${h(e.id)}"`,'small')}`])):empty('Nenhum estabelecimento','Crie o primeiro workspace.')}</section>`}
-const tenantUrl=(slug)=>`${String(conf.publicBaseUrl||location.origin).replace(/\/$/,'')}/?estabelecimento=${encodeURIComponent(slug)}${embedded?'&embed=1':''}`;
+function settingsPage(){return `${head('Configurações','Personalização do ambiente e status das integrações.') }<div class="grid2"><section class="card"><h2 style="margin-bottom:17px">Estabelecimento</h2><div class="list-row"><span class="muted">Nome</span><strong>${h(state.current.name)}</strong></div><div class="list-row"><span class="muted">Fuso horário</span><strong>${h(state.current.timezone)}</strong></div></section><section class="card"><h2 style="margin-bottom:17px">Integrações</h2><div class="list-row"><span>AVEC</span><span class="badge ${state.status?.avec_configured?'green':'amber'}">${state.status?.avec_configured?'Configurado':'Pendente'}</span></div><div class="list-row"><span>Clickmassa</span><span class="badge ${state.status?.clickmassa_configured?'green':'amber'}">${state.status?.clickmassa_configured?'Configurado':'Pendente'}</span></div><div class="list-row"><span>Última coleta AVEC</span><span class="small">${h(fmt(state.status?.last_avec_snapshot||state.status?.last_avec_sync))}</span></div><div class="list-row"><span>Última sync CRM</span><span class="small">${h(fmt(state.status?.last_clickmassa_sync))}</span></div></section></div>`}
+function renderMaster(){
+ el.innerHTML=`<div class="layout master-layout">
+  <button type="button" class="nav-scrim" data-action="toggle-nav" aria-label="Fechar menu" ${state.navOpen?'':'hidden'}></button>
+  <aside id="main-sidebar" class="sidebar ${state.navOpen?'open':''}">
+   <div class="brand"><div class="brandmark">✦</div><span>FlowSuite</span></div>
+   <nav class="nav-list" aria-label="Administração">
+    <div class="sidebar-caption">Painel master</div>
+    <a class="nav-link active" href="/?admin=1" aria-current="page">Estabelecimentos</a>
+   </nav>
+   <div class="sidebar-bottom"><p class="muted small master-account">${h(state.user.email)}</p>
+    ${button('Sair da conta','logout','','ghost')}</div>
+  </aside>
+  <div class="main"><header class="topbar"><div class="actions">
+    <button class="btn ghost mobile-menu" data-action="toggle-nav" aria-label="Menu" aria-controls="main-sidebar" aria-expanded="${state.navOpen}">☰</button>
+    <strong>Administração master</strong>
+  </div></header><main class="content" id="main-content">${adminPage()}</main></div>
+ </div>`;
+ if(state.modal) showModal();
+}
+
+function adminPage(){
+ if(!state.profile?.master_admin) return empty('Acesso restrito','Somente administradores master podem acessar esta área.');
+ const active=state.establishments.filter(x=>x.active).length;
+ const establishments=state.establishments.map(unit=>{
+  const attr=`data-id="${h(unit.id)}"`;
+  const link=tenantUrl(unit.slug,false);
+  return `<article class="card unit-card" data-unit="${h(unit.id)}">
+   <div class="card-heading"><div><h2>${h(unit.name)}</h2><p class="hint">${h(unit.timezone)}</p><p class="hint">ID <span class="code">${h(unit.id)}</span></p></div>
+    <span class="badge ${unit.active?'green':'red'}">${unit.active?'Ativo':'Inativo'}</span></div>
+   <div class="field"><label for="unit-link-${h(unit.id)}">Link da equipe</label>
+    <div class="input-row"><input class="input" id="unit-link-${h(unit.id)}" value="${h(link)}" readonly>
+    ${button('Copiar link','copy-unit-link',attr,'small')}</div></div>
+   <div class="actions">
+    ${button('Integrações','credentials',attr,'small')}
+    ${button('Acessos','grant-access',attr,'small')}
+    ${button(unit.active?'Desativar':'Ativar','toggle-establishment',attr,'small')}
+    ${unit.active?`<a class="btn small" href="${h(link)}" target="_blank" rel="noopener">Abrir operação</a>`:''}
+   </div>
+  </article>`;
+ }).join('');
+ return `${head('Estabelecimentos','Cadastre unidades, configure integrações e libere o acesso das equipes.',button('＋ Nova unidade','add-establishment'))}
+ <div class="kpi-row master-summary"><span class="badge green">${active} ativos</span><span class="badge">${state.establishments.length-active} inativos</span></div>
+ ${establishments?`<div class="unit-grid">${establishments}</div>`:`<section class="card">${empty('Nenhuma unidade criada','Use Nova unidade para começar.')}</section>`}`;
+}
+const tenantUrl=(slug,embed=embedded)=>`${String(conf.publicBaseUrl||location.origin).replace(/\/$/,'')}/?estabelecimento=${encodeURIComponent(slug)}${embed?'&embed=1':''}`;
 function modalHtml(){const m=state.modal;let content='';if(m.type==='add-establishment')content=`<form id="establishment-form" class="stack">${field('Nome do estabelecimento','name','text','Ex: Studio Premium','','required minlength="2"')}${field('Slug do link (sem espaços)','slug','text','studio-premium','','required pattern="[a-z0-9]+(-[a-z0-9]+)*"')}${select('Fuso horário','timezone',[opt('America/Sao_Paulo','Brasília / São Paulo'),opt('America/Fortaleza','Fortaleza / Nordeste'),opt('America/Manaus','Manaus'),opt('America/Rio_Branco','Rio Branco')])}<div class="alert info">O cadastro criará o estabelecimento e registros iniciais no banco, com isolamento por RLS.</div><div class="modal-footer">${button('Cancelar','close-modal','','')}<button class="btn primary" type="submit">Criar estabelecimento</button></div></form>`;
- if(m.type==='credentials')content=`<form id="credentials-form" class="stack"><div class="alert">Informe um novo token AVEC para atualizar a integração desta unidade.</div>${field('Token AVEC','avec_token','password','Novo token (opcional)')}<div class="modal-footer">${button('Cancelar','close-modal','','')}<button class="btn primary" type="submit">Salvar credenciais</button></div></form>`;
+ if(m.type==='credentials')content=integrationSetup(m);
  if(m.type==='grant-access')content=`<form id="access-form" class="stack"><div class="alert info">O usuário deve primeiro criar a conta e confirmar o e-mail, depois você atribui o acesso.</div>${field('E-mail do usuário','email','email','usuario@empresa.com','','required')}${select('Permissão','role',[opt('owner','Proprietário'),opt('manager','Gerente'),opt('operator','Operador'),opt('viewer','Somente leitura')])}<div class="modal-footer">${button('Cancelar','close-modal','','')}<button class="btn primary" type="submit">Autorizar acesso</button></div></form>`;
  if(m.type==='automation')content=automationForm();
+ if(m.type==='automation-preview')content=m.loading?'<p role="status" class="hint">Calculando elegibilidade…</p>':
+  `<p class="alert info">${m.eligible==null?'Não foi possível simular a regra.':`${m.eligible===100?'100 ou mais':m.eligible} envios elegíveis nas últimas 24 horas.`}</p>
+   <p class="hint">A simulação considera consentimento, horário, canal, modelo, eventos importados e histórico da fila. Nenhuma mensagem foi criada.</p>`;
+
  if(m.type==='customer-detail')content=customerDetail(m.id);
  if(m.type==='service-return'){const s=state.services.find(x=>x.id===m.id);content=`<form id="service-return-form" class="stack"><p class="muted small">${h(s?.name)}</p>${field('Dias médios para retorno','default_return_days','number','30',s?.default_return_days||30,'min="1" max="3650" required')}<div class="alert info">A regra de retorno de cada serviço poderá usar este intervalo.</div><div class="modal-footer">${button('Cancelar','close-modal','','')}<button class="btn primary" type="submit">Salvar</button></div></form>`}
- const titles={'add-establishment':['Novo estabelecimento','Crie uma URL e um ambiente isolado.'],credentials:['Credenciais seguras','Token AVEC'], 'grant-access':['Acesso ao estabelecimento','Vincule um usuário confirmado.'],automation:[state.editing?'Editar automação':'Criar automação','Canal, template e regras independentes'], 'customer-detail':['Histórico do cliente','Dados sincronizados do AVEC'], 'service-return':['Retorno por serviço','Intervalo médio recomendado']};let [title,desc]=titles[m.type]||['Editar',''];return `<div class="modal-bg" id="modal-bg"><div class="modal ${m.type==='automation'?'wide':''}" role="dialog" aria-modal="true" aria-label="${h(title)}"><div class="modal-head"><div><h2>${h(title)}</h2><p>${h(desc)}</p></div>${button('✕','close-modal','aria-label="Fechar janela"','ghost small')}</div><div class="modal-body">${content}</div></div>`}
+ const titles={'add-establishment':['Novo estabelecimento','Crie uma URL e um ambiente isolado.'],credentials:['Integrações da unidade',state.establishments.find(x=>x.id===m.id)?.name||''], 'grant-access':['Acesso ao estabelecimento','Vincule um usuário confirmado.'],'automation-preview':['Simulação da regra','Elegibilidade dos eventos da unidade'],automation:[state.editing?'Editar automação':'Criar automação','Canal, template e regras independentes'], 'customer-detail':['Histórico do cliente','Dados sincronizados do AVEC'], 'service-return':['Retorno por serviço','Intervalo médio recomendado']};let [title,desc]=titles[m.type]||['Editar',''];return `<div class="modal-bg" id="modal-bg"><div class="modal ${['automation','credentials'].includes(m.type)?'wide':''}" role="dialog" aria-modal="true" aria-label="${h(title)}"><div class="modal-head"><div><h2>${h(title)}</h2><p>${h(desc)}</p></div>${button('✕','close-modal','aria-label="Fechar janela"','ghost small')}</div><div class="modal-body">${content}</div></div>`}
+const integrationSyncLabels={
+ pending:'Sincronização solicitada', ready:'Catálogo sincronizado',
+ auth_error:'Login recusado pelo Clickmassa', sync_error:'Falha ao sincronizar o catálogo',
+ sender_error:'Catálogo sincronizado. Confira as credenciais de envio dos canais pendentes.'
+};
+
+function integrationSetup(modal){
+ if(modal.loading) return '<p role="status" class="hint">Carregando integrações…</p>';
+ if(!modal.setup) return `<p class="alert">Não foi possível carregar a configuração. Confira se a migração 005 está aplicada.</p>${button('Tentar novamente','reload-integration','','small')}`;
+ const {status={},channels=[],catalog_email,catalog_tenant,catalog_verified}=modal.setup;
+ const syncStatus=status||{};
+ const online=syncStatus.worker&&Date.now()-Date.parse(syncStatus.worker)<120000;
+ const selected=channels.find(x=>x.id===modal.channelId)||null;
+ const unit=state.establishments.find(x=>x.id===modal.id);
+ const avecTest=modal.avecTest;
+ return `<div class="stack">
+ <div class="alert info" role="status">${online?'Serviço conectado.':'Serviço sem sinal recente.'}
+ ${h(integrationSyncLabels[syncStatus.sync]||'Aguardando configuração do catálogo.')}
+ ${syncStatus.last_sync?` Última sincronização em ${h(fmt(syncStatus.last_sync))}.`:''}
+ <div class="actions" style="margin-top:8px">${button('Atualizar status','reload-integration','','small')}${catalog_email?button('Sincronizar agora','sync-integration','','small'):''}
+ ${unit?.active&&channels.some(c=>c.ready)?`<a class="btn small" href="${h(tenantUrl(unit.slug,false))}&amp;teste=1" target="_blank" rel="noopener">Abrir envio de teste</a>`:''}</div></div>
+ <section class="card stack"><form class="stack" id="credentials-form">
+ <h3>AVEC</h3><p class="hint">${syncStatus.avec?'Token cadastrado. Preencha para substituir.':'Cadastre o token usado para consultar relatórios desta unidade.'}</p>
+ ${field('Token AVEC','avec_token','password','Novo token','','required autocomplete="new-password"')}
+ <div class="actions"><button class="btn primary" type="submit">Salvar token AVEC</button>
+ ${syncStatus.avec&&unit?.active?button('Testar AVEC','test-avec','','small'):''}</div>
+ ${avecTest?.avec_test_state?`<p class="hint" role="status">${avecTest.avec_test_state==='ready'?
+  `Conexão validada. ${h(avecTest.avec_test_records)} registros na primeira página.`:avecTest.avec_test_state==='error'?
+  'O serviço não conseguiu validar a resposta AVEC. Confira o token.':'Teste solicitado ao serviço.'}</p>`:''}
+ </form></section>
+ <section class="card stack"><form class="stack" id="clickmassa-account-form">
+ <h3>Clickmassa · conta do catálogo</h3><p class="hint">O serviço usa este login para buscar canais e modelos aprovados.</p>
+ <div class="form-grid">
+ ${field('E-mail Clickmassa','catalog_email','email','usuario@empresa.com',catalog_email,'required autocomplete="off"')}
+ ${field('ID da empresa no Clickmassa','catalog_tenant','text','ID numérico',catalog_tenant,`required inputmode="numeric" pattern="[1-9][0-9]*" ${catalog_verified?'readonly':''}`)}
+ </div>
+ ${field('Senha Clickmassa','catalog_password','password',catalog_email?'Em branco para manter':'Senha da conta','','autocomplete="new-password" '+(catalog_email?'':'required'))}
+ <div class="actions"><button class="btn primary" type="submit">Salvar e sincronizar</button></div></form></section>
+ <section class="card stack"><h3>Clickmassa · envio por canal</h3>
+ ${channels.length?`<form class="stack" id="clickmassa-sender-form">
+ ${select('Canal','clickmassa_channel',[opt('','Selecione um canal'),...channels.map(c=>opt(c.id,`${c.name} · ${c.type==='waba'?'Oficial':'QR Code'}`))],selected?.id||'','required')}
+ ${selected?`<p class="hint">${selected.ready?'Pronto para enviar.':selected.configured?'Credencial cadastrada. Confira a liberação e o status da sincronização.':'URL e token pendentes para este canal.'}</p>
+ ${field('URL de envio','clickmassa_send_url','url',selected.configured?'Em branco para manter':'URL da API externa', '',selected.configured?'autocomplete="off"':'required autocomplete="off"')}
+ ${field('Token de envio','clickmassa_send_token','password',selected.configured?'Em branco para manter':'Token emitido para o canal','',selected.configured?'autocomplete="new-password"':'required autocomplete="new-password"')}
+ <label class="check-row"><input type="checkbox" name="clickmassa_enabled" ${selected.enabled?'checked':''}>Liberar envios neste canal</label>
+ <div class="actions"><button class="btn primary" type="submit">Salvar canal</button></div>`:''}</form>`:'<p class="hint">Salve a conta do catálogo e aguarde a chegada dos canais para configurar o envio.</p>'}</section>
+ </div>`;
+}
+
+async function reloadIntegration(modal, focusSelector=''){
+ const [{data,error},avec]=await Promise.all([
+  db().rpc('fs_integration_setup',{p_est:modal.id}),
+  db().from('integration_status').select('avec_test_state,avec_test_records').eq('establishment_id',modal.id).maybeSingle(),
+ ]);
+ if(state.modal!==modal) return;
+ modal.loading=false;
+ modal.setup=error?null:data;
+ modal.avecTest=avec.data;
+ const body=document.querySelector('.modal-body');
+ body.innerHTML=integrationSetup(modal);
+ if(focusSelector) (body.querySelector(focusSelector)||document.querySelector('.modal-head button'))?.focus();
+ if(error) apiError(error);
+}
+
+async function openIntegration(id){
+ if(!state.profile?.master_admin) throw Error('Acesso restrito ao administrador master.');
+ openModal('credentials',id);
+ await reloadIntegration(state.modal);
+}
+
+async function changeIntegration(rpc, values, message, focus){
+ const modal=state.modal;
+ const {error}=await db().rpc(rpc,{p_est:modal.id,...values});
+ if(error) throw error;
+ toast(message);
+ if(state.modal===modal) await reloadIntegration(modal,focus);
+}
+
 function customerDetail(id){
  const {detail,loading}=state.modal;
  if(loading) return '<p class="hint" role="status">Carregando histórico…</p>';
@@ -462,8 +669,8 @@ const triggerHelp={
 function automationForm(){
  const a=state.editing||{}, rules=a.rules||{};
  const type=a.type||state.modal.moduleType||'csat';
- const channels=activeChannels().map(c=>opt(c.id,c.name));
- const templates=activeTemplates().map(t=>opt(t.id,t.name));
+ const channels=activeChannels().filter(c=>c.type==='waba').map(c=>opt(c.id,c.name));
+ const templates=activeTemplates().filter(t=>t.clickmassa_channel_id===a.channel_id).map(t=>opt(t.id,t.name));
  if(a.channel_id&&!channels.some(x=>x.value===a.channel_id)) channels.push(opt(a.channel_id,'Canal atual (indisponível)'));
  if(a.template_id&&!templates.some(x=>x.value===a.template_id)) templates.push(opt(a.template_id,'Modelo atual (indisponível)'));
  const selected=new Set(Array.isArray(rules.service_ids)?rules.service_ids:[]);
@@ -480,7 +687,7 @@ function automationForm(){
  <div data-for-types="stock arrival">${field('Telefone do responsável com DDI','recipient_phone','tel','+5511999990000',rules.recipient_phone,'maxlength="30"')}</div>
  <div data-for-types="stock">${field('Limite de estoque','min_stock','number','0',rules.min_stock??0,'min="0" max="999999999"')}</div>
  <div data-for-types="cross_sell">${select('Serviço recomendado','cross_sell_target_service_id',[opt('','Selecione um serviço'),...services],rules.cross_sell_target_service_id)}</div>
- <div data-for-types="inactive return">${select('Contar a partir de','date_basis',[opt('last_completed','Último atendimento concluído'),opt('last_appointment','Último agendamento'),opt('next_appointment','Próximo agendamento')],rules.date_basis||'last_completed')}</div>
+ <div data-for-types="inactive return">${select('Contar a partir de','date_basis',[opt('last_completed','Último atendimento concluído'),opt('last_appointment','Último agendamento'),opt('next_appointment','Próximo agendamento (legado)')],rules.date_basis||'last_completed')}</div>
  ${field('Intervalo mínimo entre mensagens (dias)','cooldown_days','number','7',rules.cooldown_days??7,'min="0" max="3650" required')}
  </div>
  <details class="service-picker" ${selected.size?'open':''} data-for-types="csat inactive post_service return cross_sell arrival">
@@ -491,13 +698,25 @@ function automationForm(){
  ${select('Canal de WhatsApp','channel_id',[opt('','Selecione um canal'),...channels],a.channel_id,'required')}
  ${select('Modelo de mensagem','template_id',[opt('','Selecione um modelo'),...templates],a.template_id,'required')}
  </div><div class="stack" data-variables></div>
- <label class="check-row"><input type="checkbox" name="enabled" ${a.enabled?'checked':''}> Ativar regra após salvar</label>
+ <label class="check-row"><input type="checkbox" name="enabled" ${a.enabled&&a.native_armed_at?'checked':''}> Ativar regra após salvar</label>
  <div class="modal-footer">${button('Cancelar','close-modal','','ghost')}<button class="btn primary" type="submit">Salvar automação</button></div></form>`;
 }
 
+function updateAutomationTemplates(form){
+ const channel=form.elements.channel_id.value;
+ const selectInput=form.elements.template_id;
+ const models=activeTemplates().filter(x=>x.clickmassa_channel_id===channel);
+ const previous=selectInput.value;
+ selectInput.replaceChildren(new Option('Selecione um modelo',''),...models.map(x=>new Option(x.name,x.id)));
+ if(models.some(x=>x.id===previous)) selectInput.value=previous;
+ variablePanel(form);
+}
 function updateAutomationFields(form){
  const type=form.elements.type.value;
- form.querySelector('[data-trigger-help]').textContent=triggerHelp[type]||'';
+ form.querySelector('[data-trigger-help]').textContent=nativeRuleTypes.has(type)?triggerHelp[type]:
+  'A regra pode ser salva. A ativação depende de uma fonte de eventos validada.';
+ form.elements.enabled.disabled=!nativeRuleTypes.has(type);
+ if(form.elements.enabled.disabled) form.elements.enabled.checked=false;
  for(const group of form.querySelectorAll('[data-for-types]')){
   group.hidden=!group.dataset.forTypes.split(' ').includes(type);
   for(const field of group.querySelectorAll('input,select')){
@@ -531,7 +750,7 @@ function closeModal(){
  modalOpener?.focus();
 }
 function openModal(type,id='',moduleType=''){
- state.modal={type,id,moduleType};
+ state.modal={type,id,moduleType,loading:type==='credentials'};
  state.editing=type==='automation'&&id?state.modules.find(x=>x.id===id):null;
  showModal();
 }
@@ -547,7 +766,11 @@ async function saveAutomation(form){
  const f=new FormData(form), original=state.editing;
  const type=original?.type||f.get('type');
  const channel=f.get('channel_id'),template=f.get('template_id');
- if(!activeChannels().some(x=>x.id===channel)||!activeTemplates().some(x=>x.id===template)) throw Error('Escolha um canal de WhatsApp e um modelo ativos.');
+ const enabled=f.has('enabled');
+ if(!activeChannels().some(x=>x.id===channel)||!activeTemplates().some(x=>x.id===template)) throw Error('Escolha um canal e um modelo ativos.');
+ if(enabled&&(!nativeRuleTypes.has(type)||!dispatchChannels().some(x=>x.id===channel&&x.type==='waba')||
+   !activeTemplates().some(x=>x.id===template&&x.clickmassa_channel_id===channel))) throw Error('A ativação exige um modelo deste canal Oficial pronto para envio.');
+ if(enabled&&f.get('date_basis')==='next_appointment') throw Error('Selecione um atendimento passado para definir o intervalo.');
  const rules={...original?.rules,cooldown_days:Number(f.get('cooldown_days'))};
  if(!original||!form.querySelector('.service-picker').hidden) rules.service_ids=f.getAll('service_ids');
  if(f.has('cross_sell_target_service_id')) rules.cross_sell_target_service_id=f.get('cross_sell_target_service_id');
@@ -558,7 +781,7 @@ async function saveAutomation(form){
   if(!/^\+?[1-9]\d{9,14}$/.test(rules.recipient_phone)) throw Error('Informe o telefone do responsável com DDI.');
  }
  const tenant=state.current.id;
- const obj={establishment_id:tenant,type,name:String(f.get('name')).trim(),enabled:f.has('enabled'),
+ const obj={establishment_id:tenant,type,name:String(f.get('name')).trim(),enabled,native_armed_at:enabled?new Date().toISOString():null,
   delay_days:Number(f.get('delay_days')),send_time:f.get('send_time'),channel_id:channel,template_id:template,
   rules,variable_mapping:readVariableMapping(form),updated_at:new Date().toISOString()};
  if(!obj.name) throw Error('Preencha o nome da automação.');
@@ -577,18 +800,50 @@ async function saveEstablishment(form){const f=new FormData(form),name=String(f.
 async function saveCredentials(form){
  const token=String(new FormData(form).get('avec_token')||'').trim();
  if(!token) throw Error('Informe o token AVEC.');
- const {error}=await db().rpc('fs_set_avec_token',{p_est:state.modal.id,p_token:token});
- if(error) throw error;
- toast('Credencial AVEC atualizada.');
- state.modal=null;
- await loadTenant();
- render();
+ await changeIntegration('fs_set_avec_token',{p_token:token},'Token AVEC atualizado.','#avec_token');
+}
+async function saveClickmassaAccount(form){
+ const data=new FormData(form);
+ await changeIntegration('fs_save_clickmassa_account',{p_tenant:data.get('catalog_tenant'),p_email:data.get('catalog_email'),
+  p_password:data.get('catalog_password')||null},'Conta salva. Sincronização solicitada.','#catalog_email');
+}
+async function saveClickmassaSender(form){
+ const data=new FormData(form);
+ await changeIntegration('fs_save_clickmassa_sender',{p_channel:data.get('clickmassa_channel'),p_url:data.get('clickmassa_send_url')||null,
+  p_token:data.get('clickmassa_send_token')||null,p_enabled:data.has('clickmassa_enabled')},'Configuração do canal salva.','#clickmassa_channel');
 }
 async function saveAccess(form){const f=new FormData(form);const {error}=await db().rpc('grant_membership_by_email',{p_est:state.modal.id,p_email:f.get('email'),p_role:f.get('role')});if(error)throw error;toast('Usuário autorizado.');state.modal=null;render()}
 async function saveServiceReturn(form){const days=Number(new FormData(form).get('default_return_days'));const {error}=await db().from('services').update({default_return_days:days}).eq('id',state.modal.id).eq('establishment_id',state.current.id);if(error)throw error;toast('Intervalo salvo.');state.modal=null;await loadTenant();render()}
+async function sendDiagnostic(form){
+ const f=new FormData(form);
+ const route=dispatchChannels().find(x=>x.id===f.get('channel_id'));
+ if(!route) throw Error('Escolha um canal pronto para envio.');
+ const raw=String(f.get('test_phone')||'').trim();
+ if(!/^\+?[0-9().\s-]+$/.test(raw)) throw Error('Informe um número válido com DDI.');
+ const phone='+'+raw.replace(/[^0-9]/g,'');
+ if(!/^\+[1-9][0-9]{10,14}$/.test(phone)) throw Error('Informe o número completo com DDI.');
+ const template=route.type==='waba'?f.get('template_id'):null;
+ const content=route.type==='waba'?{params:[...form.querySelectorAll('[data-test-param]')].map(input=>input.value.trim())}:
+   {body:String(f.get('body')||'').trim(),note:String(f.get('note')||'').trim()};
+ const tenant=state.current.id;
+ const key=JSON.stringify([tenant,route.id,template,phone,content]);
+ if(form.draft?.fingerprint!==key) form.draft={fingerprint:key,id:crypto.randomUUID()};
+ const {data,error}=await db().rpc('fs_queue_clickmassa_test',{
+  p_est:tenant,p_channel:route.id,p_template:template,p_phone:phone,p_confirm:f.has('confirm_consent'),
+  p_content:content,p_request:form.draft.id,
+ });
+ if(error) throw error;
+ toast(data?'Mensagem de teste adicionada à fila.':'Teste solicitado.');
+ if(!form.isConnected) return;
+ state.page='reports';
+ await loadTenant();
+ if(state.current?.id===tenant&&state.page==='reports') render();
+}
+
 async function sendManual(form){
  if(!canSend()) throw Error('Seu perfil não pode enfileirar mensagens.');
  const f=new FormData(form), ids=[...state.manual.selected].sort();
+ if(form.dataset.testRun==='true') return sendDiagnostic(form);
  if(!ids.length||ids.length>100) throw Error('Selecione de 1 a 100 clientes.');
  if(!f.has('confirm_consent')) throw Error('Confirme o consentimento dos destinatários.');
  const channel=f.get('channel_id'),template=f.get('template_id');
@@ -640,6 +895,41 @@ async function handleAction(btn){const action=btn.dataset.action,id=btn.dataset.
  }
  if(action==='customer-detail'){await openCustomerDetail(id);return}
  if(['new-automation','edit-automation','toggle-automation','delete-automation','service-return'].includes(action)&&!canManage()) throw Error('Seu perfil não pode alterar esta configuração.');
+ if(['credentials','grant-access','add-establishment','copy-unit-link','toggle-establishment'].includes(action)&&
+    (state.page!=='admin'||!state.profile?.master_admin)) throw Error('Acesso restrito à administração master.');
+ if(action==='copy-unit-link'){
+  const unit=state.establishments.find(x=>x.id===id);
+  if(unit){await navigator.clipboard.writeText(tenantUrl(unit.slug,false));toast('Link da equipe copiado.')}
+  return;
+ }
+ if(action==='preview-automation'){
+  if(!canManage()) throw Error('Seu perfil não pode simular esta regra.');
+  const dialog={type:'automation-preview',id,loading:true};
+  state.modal=dialog;
+  showModal();
+  const {data,error}=await db().rpc('fs_preview_automation',{p_est:state.current.id,p_rule:id});
+  if(state.modal!==dialog) return;
+  Object.assign(dialog,{loading:false,eligible:error?null:data});
+  const temp=document.createElement('template');
+  temp.innerHTML=modalHtml();
+  document.querySelector('.modal-body').replaceWith(temp.content.querySelector('.modal-body'));
+  if(error) apiError(error);
+  return;
+ }
+ if(action==='credentials'){await openIntegration(id);return}
+ if(action==='reload-integration'){await reloadIntegration(state.modal,'[data-action="reload-integration"]');return}
+ if(action==='test-avec'){
+  btn.disabled=true;
+  try { await changeIntegration('fs_request_avec_test',{},'Teste de conexão AVEC solicitado.','[data-action="test-avec"]'); }
+  finally { if(btn.isConnected) btn.disabled=false; }
+  return;
+ }
+ if(action==='sync-integration'){
+  btn.disabled=true;
+  try { await changeIntegration('fs_request_clickmassa_sync',{},'Sincronização solicitada.','[data-action="sync-integration"]'); }
+  finally { if(btn.isConnected) btn.disabled=false; }
+  return;
+ }
  if(action==='retry-load'){location.reload();return}if(action==='retry-access'){await loadAuth(state.session);return}if(action==='auth-mode'){state.authMode=btn.dataset.mode;renderAuth();return}if(action==='avec-select'){
   state.avecReportCode=btn.dataset.code;render();
   const group=btn.classList.contains('avec-report-button')?'.avec-report-list':'.avec-map';
@@ -664,8 +954,23 @@ async function handleAction(btn){const action=btn.dataset.action,id=btn.dataset.
   if(title){title.tabIndex=-1;title.focus({preventScroll:true})}
   window.scrollTo(0,0);
   return;
- }if(action==='logout'){const {error}=await db().auth.signOut();if(error)throw error;state.authMode='login';state.ticket=null;state.ticketVerified=false;await loadAuth(null);return}if(action==='close-modal'){closeModal();return}if(action==='refresh'){await loadTenant();render();toast('Dados atualizados.');return}if(action==='new-automation'){openModal('automation','',btn.dataset.type||'csat');return}if(action==='edit-automation'){openModal('automation',id);return}if(action==='add-establishment'||action==='credentials'||action==='grant-access'||action==='service-return'){openModal(action,id);return}if(action==='copy-link'){await navigator.clipboard.writeText(tenantUrl(state.current.slug));toast('Link copiado.');return}
- if(action==='toggle-automation'){const a=state.modules.find(x=>x.id===id);if(!a)return;if(!a.enabled&&(!activeChannels().some(c=>c.id===a.channel_id)||!activeTemplates().some(t=>t.id===a.template_id))) throw Error('Edite a regra e escolha um canal e um modelo ativos.');const {error}=await db().from('automations').update({enabled:!a.enabled,updated_at:new Date().toISOString()}).eq('id',id).eq('establishment_id',state.current.id);if(error)throw error;await loadTenant();render();return}
+ }if(action==='logout'){const {error}=await db().auth.signOut();if(error)throw error;state.authMode='login';state.ticket=null;state.ticketVerified=false;await loadAuth(null);return}if(action==='close-modal'){closeModal();return}if(action==='refresh'){await loadTenant();render();toast('Dados atualizados.');return}if(action==='new-automation'){openModal('automation','',btn.dataset.type||'csat');return}if(action==='edit-automation'){openModal('automation',id);return}if(action==='add-establishment'||action==='grant-access'||action==='service-return'){openModal(action,id);return}if(action==='copy-link'){await navigator.clipboard.writeText(tenantUrl(state.current.slug));toast('Link copiado.');return}
+ if(action==='toggle-automation'){
+  const rule=state.modules.find(x=>x.id===id);
+  if(!rule) return;
+  const enabled=!(rule.enabled&&rule.native_armed_at);
+  if(enabled&&(!nativeRuleTypes.has(rule.type)||rule.rules?.date_basis==='next_appointment'||
+    !dispatchChannels().some(c=>c.id===rule.channel_id&&c.type==='waba')||
+    !activeTemplates().some(t=>t.id===rule.template_id&&t.clickmassa_channel_id===rule.channel_id))){
+   throw Error('Edite a regra. A ativação exige um gatilho disponível e um modelo do canal Oficial.');
+  }
+  const {error}=await db().from('automations').update({enabled,native_armed_at:enabled?new Date().toISOString():null,updated_at:new Date().toISOString()})
+   .eq('id',id).eq('establishment_id',state.current.id);
+  if(error) throw error;
+  await loadTenant();
+  render();
+  return;
+ }
  if(action==='delete-automation'){if(!confirm('Excluir esta automação permanentemente?'))return;const {error}=await db().from('automations').delete().eq('id',id).eq('establishment_id',state.current.id);if(error)throw error;await loadTenant();render();toast('Automação excluída.');return}
  if(action==='toggle-establishment'){const e=state.establishments.find(x=>x.id===id);if(!e)return;if(!confirm(`${e.active?'Desativar':'Ativar'} ${e.name}?`))return;const {error}=await db().from('establishments').update({active:!e.active}).eq('id',id);if(error)throw error;await loadAuth(state.session);state.page='admin';render();return}}
 function installPostMessage(){window.addEventListener('message',(event)=>{const allowed=Array.isArray(conf.allowedParentOrigins)?conf.allowedParentOrigins:[];if(window.parent===window||!allowed.length||!allowed.includes(event.origin)||event.source!==window.parent)return;let payload=event.data;if(typeof payload==='string'){if(payload.length>20000)return;try{payload=JSON.parse(payload)}catch{return}}if(!payload||typeof payload!=='object'||Array.isArray(payload))return;
@@ -678,6 +983,7 @@ function installPostMessage(){window.addEventListener('message',(event)=>{const 
 function wireEvents(){
  const submits={
   'auth-form':submitAuth,'establishment-form':saveEstablishment,'credentials-form':saveCredentials,
+  'clickmassa-account-form':saveClickmassaAccount,'clickmassa-sender-form':saveClickmassaSender,
   'access-form':saveAccess,'automation-form':saveAutomation,'manual-form':sendManual,'service-return-form':saveServiceReturn
  };
  document.addEventListener('click',async e=>{
@@ -708,15 +1014,30 @@ function wireEvents(){
  });
  document.addEventListener('change',async e=>{
   const input=e.target,form=input.form;
+  if(input.id==='catalog_channel'){
+   catalogChannel=input.value;
+   document.getElementById('catalog-models').innerHTML=catalogModels();
+   return;
+  }
   if(input.id==='tenant-select'){
+   catalogChannel='';
    clearTenant();
-   state.current=state.establishments.find(x=>x.id===input.value);
+   state.current=state.establishments.find(x=>x.id===input.value&&x.active);
    if(state.current) localStorage.setItem('flowsuite_tenant',state.current.slug);
    state.page='dashboard';state.navOpen=false;
    const loading=loadTenant();
    render();
    await loading;
    if(state.current?.id===input.value) render();
+   return;
+  }
+  if(input.name==='clickmassa_channel'&&state.modal?.type==='credentials'){
+   state.modal.channelId=input.value;
+   const template=document.createElement('template');
+   template.innerHTML=integrationSetup(state.modal);
+   const sender=template.content.querySelector('#clickmassa-sender-form');
+   input.form.replaceWith(sender);
+   sender.querySelector('#clickmassa_channel')?.focus();
    return;
   }
   if(!form||!['manual-form','automation-form'].includes(form.id)) return;
@@ -729,6 +1050,8 @@ function wireEvents(){
    if(input.checked) state.manual.selected.add(input.value);
    else state.manual.selected.delete(input.value);
    syncRecipientSelection(form);
+  }else if(input.name==='channel_id'&&form.id==='automation-form'){
+   updateAutomationTemplates(form);
   }else if(input.name==='channel_id'&&form.id==='manual-form'){
    updateManualChannel(form);
   }else if(input.name==='service_id'){
@@ -751,6 +1074,7 @@ function wireEvents(){
  document.addEventListener('input',e=>{
   const input=e.target;
   if(input.id==='avec-search') filterAvec(input.value);
+  if(input.hasAttribute('data-test-param')) updateMessagePreview(input.form);
   if(input.id==='customer-search'||input.id==='customer-filter'){
    const manual=input.id==='customer-search';
    const view=manual?state.manual:browse;
@@ -779,6 +1103,7 @@ function wireEvents(){
  });
 }
 wireEvents();
+setInterval(refreshVisibleJobs,8000);
 boot().catch(err=>{
  el.innerHTML='<main class="splash"><p>Não foi possível abrir o ambiente.</p><button class="btn" data-action="retry-load">Tentar novamente</button></main>';
  apiError(err);

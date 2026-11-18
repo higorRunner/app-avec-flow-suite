@@ -7,34 +7,66 @@ function required(env, key) {
   return env[key].trim();
 }
 
-function sendersFrom(env, tenantId) {
-  const senders = new Map();
+function validateSender(id, { url, token }, tenantId) {
+  const endpoint = senderEndpoint(url);
+  let claims;
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) throw new Error();
+    claims = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+  } catch {
+    throw new Error(`Token de envio inválido para o canal ${id}.`);
+  }
+  // These claims detect configuration mistakes. Clickmassa authenticates the token when sending.
+  if (String(claims?.sessionId) !== id || String(claims?.tenantId) !== tenantId ||
+      !Number.isFinite(claims?.exp) || claims.exp <= Date.now() / 1000) {
+    throw new Error(`O token de envio do canal ${id} está vencido ou pertence a outro canal ou empresa.`);
+  }
+  return { url:endpoint, token, type:claims.channelType };
+}
+
+function environmentSettings(env) {
+  if (!env.CLICKMASSA_EMAIL && !env.CLICKMASSA_PASSWORD && !env.CLICKMASSA_TENANT_ID) return null;
+  const email = required(env, 'CLICKMASSA_EMAIL');
+  required(env, 'CLICKMASSA_PASSWORD');
+  const tenantId = required(env, 'CLICKMASSA_TENANT_ID');
+  const senders = {};
   for (const key of Object.keys(env)) {
     const match = key.match(/^CLICKMASSA_SEND_URL_([1-9]\d*)$/);
     if (!match) continue;
-    const id = match[1];
-    const url = senderEndpoint(required(env, key));
-    const token = required(env, `CLICKMASSA_SEND_TOKEN_${id}`);
-    let claims;
-    try {
-      const parts = token.split('.');
-      if (parts.length !== 3) throw new Error();
-      claims = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
-    } catch {
-      throw new Error(`O canal ${id} precisa de um token de envio da API externa.`);
-    }
-    // These claims prevent configuration mix-ups. Clickmassa authenticates the token on send.
-    if (String(claims?.sessionId) !== id || String(claims?.tenantId) !== tenantId ||
-        !Number.isFinite(claims?.exp) || claims.exp <= Date.now() / 1000) {
-      throw new Error(`O token de envio do canal ${id} está vencido ou pertence a outro canal ou tenant.`);
-    }
-    senders.set(id, { url, token, type: claims.channelType });
+    senders[match[1]] = { url: env[key], token:env[`CLICKMASSA_SEND_TOKEN_${match[1]}`] };
   }
-  for (const key of Object.keys(env)) {
-    const match = key.match(/^CLICKMASSA_SEND_TOKEN_([1-9]\d*)$/);
-    if (match && !senders.has(match[1])) throw new Error(`Configure CLICKMASSA_SEND_URL_${match[1]}.`);
+  return { email, password:env.CLICKMASSA_PASSWORD, tenantId, senders };
+}
+
+export async function syncClickmassa({ rpc, establishment, settings, revision, dispatchEnabled, lookup=readCatalog }) {
+  const p_est = establishment;
+  const publish = (state, catalog)=>rpc('fs_commit_clickmassa_sync',{
+    p_est,p_revision:revision,p_channels:catalog?.channels??null,p_templates:catalog?.templates??null,p_state:state,
+  });
+  const senders = new Map();
+  let senderError = false;
+  if(dispatchEnabled){
+    for(const [id, credentials] of Object.entries(settings.senders||{})){
+      try { senders.set(id, validateSender(id, credentials, settings.tenantId)); }
+      catch { senderError = true; }
+    }
   }
-  return senders;
+  let catalog;
+  try {
+    catalog = await lookup({ email:settings.email,password:settings.password,tenantId:settings.tenantId });
+  } catch(error) {
+    await publish([401,403,422].includes(error.status)?'auth_error':'sync_error');
+    throw error;
+  }
+  for(const channel of catalog.channels){
+    const sender = senders.get(channel.external_id);
+    if(sender && sender.type !== channel.type) senderError = true;
+    channel.dispatch_ready = channel.active && sender?.type === channel.type;
+  }
+  const accepted = await publish(senderError?'sender_error':'ready',catalog);
+  if(accepted) console.log(`Clickmassa: catálogo atualizado (${catalog.channels.length} canais e ${catalog.templates.length} modelos).`);
+  return { accepted, senders };
 }
 
 function supabaseRpc(env) {
@@ -97,36 +129,57 @@ export async function run(env) {
   if (!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(establishment)) throw new Error('UUID do estabelecimento inválido.');
   const rpc = supabaseRpc(env);
   const p_est = establishment;
-  const email = required(env, 'CLICKMASSA_EMAIL');
-  required(env, 'CLICKMASSA_PASSWORD');
-  const password = env.CLICKMASSA_PASSWORD;
-  const tenantId = required(env, 'CLICKMASSA_TENANT_ID');
-  const senders = sendersFrom(env, tenantId);
-  const dispatchEnabled = env.FLOWSUITE_SEND_ENABLED === 'true';
+  const legacy = environmentSettings(env);
   const reportCodes = [...new Set((env.AVEC_SNAPSHOT_CODES || '').split(',').map(code => code.trim()).filter(Boolean))];
   if (reportCodes.some(code => !/^\d{4}$/.test(code))) throw new Error('Informe códigos AVEC de quatro dígitos.');
   const controller = new AbortController();
   for (const signal of ['SIGTERM', 'SIGINT']) process.once(signal, () => controller.abort());
 
   let synced = false;
+  let revisionSeen;
+  let nextSync = 0;
+  let senders = new Map();
   const catalog = poll(async () => {
-    synced = false;
-    const { channels, templates } = await readCatalog({ email, password, tenantId });
-    for (const channel of channels) {
-      const sender = senders.get(channel.external_id);
-      channel.dispatch_ready = dispatchEnabled && channel.active && sender?.type === channel.type;
+    const state = await rpc('fs_clickmassa_worker_state',{ p_est });
+    if(!state){
+      synced = false;
+      return;
     }
-    await rpc('fs_sync_clickmassa_catalog', { p_est, p_channels: channels, p_templates: templates });
-    synced = true;
-    console.log(`Clickmassa: catálogo atualizado (${channels.length} canais e ${templates.length} modelos).`);
-  }, 15 * 60_000, 'catálogo Clickmassa', controller.signal);
+    const revision = state.revision;
+    if(revision===revisionSeen && Date.now()<nextSync) return;
+    const changed = revision!==revisionSeen;
+    if(changed) synced = false;
+    revisionSeen = revision;
+    nextSync = Date.now() + 60_000;
+    const settings = revision
+      ? await rpc('fs_clickmassa_worker_settings',{ p_est,p_revision:revision })
+      : legacy;
+    if(!settings) {
+      synced = false;
+      return;
+    }
+    synced = false;
+    const dispatchEnabled = revision ? env.FLOWSUITE_SEND_ENABLED!=='false' : env.FLOWSUITE_SEND_ENABLED==='true';
+    const result = await syncClickmassa({rpc,establishment,settings,revision,dispatchEnabled});
+    if(result.accepted){
+      senders = result.senders;
+      synced = true;
+      nextSync = Date.now() + 15 * 60_000;
+    }
+  }, 10_000, 'catálogo Clickmassa', controller.signal);
 
   const queue = poll(async () => {
-    if (!synced || !dispatchEnabled || !senders.size) return;
+    if (!synced || !senders.size) return;
     for (let i = 0; i < 10 && !controller.signal.aborted; i++) {
       if (!await dispatchOne({ rpc, establishment, senders })) break;
     }
   }, 5000, 'fila Clickmassa', controller.signal);
+
+  const automations = poll(async () => {
+    if (!synced || !senders.size) return;
+    const queued = await rpc('fs_schedule_automations', { p_est });
+    if (queued > 0) console.log(`Automações: ${queued} envio(s) adicionado(s) à fila.`);
+  }, 60_000, 'agendamento de rotinas', controller.signal);
 
   const avec = reportCodes.length ? poll(async () => {
     const token = await rpc('fs_worker_avec_token', { p_est });
@@ -144,7 +197,21 @@ export async function run(env) {
     }
   }, 60 * 60_000, 'consulta AVEC', controller.signal) : Promise.resolve();
 
-  await Promise.all([catalog, queue, avec]);
+  const avecTest = poll(async () => {
+    const request = await rpc('fs_pending_avec_test',{p_est});
+    if(!request) return;
+    const token = await rpc('fs_worker_avec_token',{p_est});
+    let report = null;
+    if(token){
+      try { report = await fetchReportPage({code:'0004',token,params:{page:1}}); }
+      catch { console.error('AVEC: a consulta de teste não retornou um relatório reconhecido.'); }
+    }
+    await rpc('fs_complete_avec_test',{
+      p_est,p_request:request,p_records:report?.result.length??null,p_payload:report?.raw??null,
+    });
+  }, 10_000, 'teste AVEC', controller.signal);
+
+  await Promise.all([catalog, queue, automations, avec, avecTest]);
 }
 
 if (process.argv[1] && process.argv[1].replaceAll('\\','/').endsWith('/worker/service.mjs')) {

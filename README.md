@@ -4,35 +4,36 @@ Painel web, banco Supabase e serviço de processamento do próprio FlowSuite no 
 
 ## Instalação no EasyPanel
 
-1. Aplique `sql/004_native_worker.sql` depois de `sql/003_v3_hardening.sql`. Em instalação nova, aplique primeiro `001_schema.sql` e configure o administrador.
-2. No serviço web atual, mantenha o builder `Dockerfile`, o caminho de build `/` e a porta 80. O arquivo `config.js` contém a URL, a chave pública do Supabase e as origens do CRM. Se trocar esses domínios, atualize também a CSP em `nginx.conf` e, se usar Apache, em `.htaccess`.
-3. Crie um **segundo serviço App** no mesmo projeto EasyPanel, a partir deste mesmo repositório. Use o builder Dockerfile com caminho **`Dockerfile.worker`** e Build Path `/`. Esse serviço executa em segundo plano e funciona sem domínio ou porta pública.
-4. Configure as variáveis privadas do serviço de processamento conforme a tabela abaixo. Inicie com `FLOWSUITE_SEND_ENABLED=false` para conferir o catálogo. Após conferir o código e o tipo dos canais e configurar as credenciais de envio, use `true` para liberar um teste com destinatário autorizado. Comece com um serviço por estabelecimento.
+1. Aplique as migrações `004_native_worker.sql`, `005_integration_setup.sql` e `006_native_automations.sql` nessa ordem, após `003_v3_hardening.sql`. A migração 005 usa a extensão Supabase Vault. Em uma instalação nova comece por `001_schema.sql` e configure o administrador.
+2. No serviço web, selecione a fonte GitHub, branch `main`, Build Path `/`, builder `Dockerfile` e porta 80. Acompanhe o deployment até concluir e abra `/version.txt` no domínio web. O campo `git` deve corresponder ao commit da implantação. Se o commit for anterior ao esperado, confira a fonte e a revisão nos logs da implantação do serviço web.
+3. Crie um segundo serviço App privado no mesmo projeto EasyPanel, no mesmo repositório e branch. Use o builder Dockerfile, caminho `Dockerfile.worker` e Build Path `/`. O processo roda em segundo plano, sem domínio ou porta pública. Atualize o serviço web e o privado a partir da mesma revisão.
+4. Configure `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` e `FLOWSUITE_ESTABLISHMENT_ID` nas variáveis privadas do serviço. O UUID está no cartão da unidade no **Painel master**. Uma instância do serviço atende uma unidade.
+5. Abra `/?admin=1`, entre com um administrador master, crie ou selecione a unidade e abra **Integrações**. Salve o token AVEC e o login do Clickmassa. Aguarde a sincronização dos canais ou use **Atualizar status** para conferir o resultado. Selecione cada canal que pode enviar, salve a URL externa sem parâmetros, o token do mesmo canal e marque **Liberar envios neste canal** quando estiver pronto para o teste.
 
-| Variável no serviço privado | Valor |
-| --- | --- |
-| `SUPABASE_URL` | URL HTTPS do mesmo Supabase usado pelo painel |
-| `SUPABASE_SERVICE_ROLE_KEY` | Chave privada `service_role` do Supabase |
-| `FLOWSUITE_ESTABLISHMENT_ID` | UUID da unidade, exibido em **Configurações** no FlowSuite |
-| `CLICKMASSA_TENANT_ID` | ID numérico da empresa na resposta do login do Clickmassa |
-| `CLICKMASSA_EMAIL` e `CLICKMASSA_PASSWORD` | Conta Clickmassa autorizada a listar canais e modelos |
-| `CLICKMASSA_SEND_URL_<ID>` | URL HTTPS da API externa de envio daquele canal, sem parâmetros de URL. Substitua `<ID>` pelo código de canal em **Catálogos e serviços** |
-| `CLICKMASSA_SEND_TOKEN_<ID>` | Token da API externa para o mesmo canal; configure um par URL/token para cada canal que pode enviar |
-| `FLOWSUITE_SEND_ENABLED` | `true` libera o processamento da fila e os canais com credencial correspondente |
-| `AVEC_SNAPSHOT_CODES` | Opcional. Lista separada por vírgula de relatórios AVEC sem parâmetros adicionais obrigatórios, por exemplo `0004` |
+A senha Clickmassa é usada para obter a sessão de catálogo. A sessão é obtida de novo a cada sincronização. O token de envio permanece separado para cada canal e só é trocado ao cadastrar uma nova credencial. O Supabase Vault guarda o token AVEC, a senha e as credenciais de envio, e o painel apresenta apenas o estado de configuração. [Supabase Vault](https://supabase.com/docs/guides/database/vault)
 
-O serviço de processamento faz a primeira sincronização ao iniciar e repete a cada 15 minutos. Consulte os logs do serviço e a data de sincronização no painel. O endpoint de login observado aceita e-mail e senha no formato capturado. Se a conta exigir CAPTCHA ou MFA nessa chamada, use uma credencial de integração autorizada pelo fornecedor.
+A configuração da V4 por variáveis funciona como fallback até que a primeira conta de catálogo seja salva no painel. Depois de migrar, remova `CLICKMASSA_EMAIL`, `CLICKMASSA_PASSWORD`, `CLICKMASSA_TENANT_ID` e as credenciais dos canais das variáveis do serviço. A opção `FLOWSUITE_SEND_ENABLED=false` pausa todos os envios do serviço quando configurada. Remova essa opção para o painel controlar a liberação de cada canal. Caso o login exija CAPTCHA ou MFA, use uma conta ou credencial de integração autorizada pelo Clickmassa.
+
+Para coletar amostras AVEC, configure opcionalmente `AVEC_SNAPSHOT_CODES` com códigos separados por vírgula, como `0004`. Use relatórios que não exijam parâmetros adicionais.
+
+## Administração e operação
+
+- **Painel master** reúne criação e ativação de unidades, cópia do link da equipe, configuração de integrações e atribuição de acessos.
+- **Área operacional** abre pelo link da unidade. Os perfis permanecem separados para leitura, operação e gestão das regras.
+- **Catálogos e serviços** mostra os canais conectados, os canais prontos para envio e os modelos filtráveis pelo canal. Confira a hora da última sincronização.
+- **Envio de teste** aceita um único número com DDI. Use um telefone da equipe com autorização. Escolha um canal, preencha o texto ou os campos de exemplo do modelo e confira o protocolo em **Relatórios e envios**. O modo de teste funciona antes da importação de clientes. Em **Automações → Simular**, o painel calcula a elegibilidade sem criar mensagens.
 
 ### Envio e confirmação
 
 - O canal **Oficial (WABA)** lista os modelos textuais aprovados daquele canal. O identificador usado para enviar é `hsmId`. O FlowSuite monta `params` na ordem das posições do texto. Modelos com mídia ou parâmetros adicionais de cabeçalho ou botões são exibidos no catálogo como pendentes de validação.
 - O canal **QR Code** usa texto e uma nota interna opcional. Use a URL e o token emitidos para aquele canal. A classificação segue o tipo `whatsapp` do catálogo e precisa ser confirmada com a conta de homologação.
 - O Supabase reserva cada item da fila antes de enviar e confere novamente a elegibilidade do destinatário. O protocolo do FlowSuite é enviado como `externalKey`. Uma resposta `pending` aparece como **Aguardando confirmação** e o protocolo do Clickmassa fica em **Relatórios e envios**. Confirme resultados inconclusivos no Clickmassa pelo protocolo antes de refazer um envio. A consulta automática de confirmação depende do contrato de status ou de webhook do fornecedor.
-- O serviço processa envios manuais criados pelo painel atualizado. Itens antigos da fila e regras salvas devem ser revisados antes de uma eventual migração para disparo automático.
+- O serviço avalia as regras ativas a cada minuto. Pesquisa de satisfação, pós-atendimento, retorno, venda complementar, aniversário e inatividade usam os dados já normalizados no Supabase. As regras respeitam fuso, horário, consentimento, intervalo entre mensagens e controle de duplicidade.
+- Regras marcadas como **Revisar ativação** exigem ativação explícita. A execução considera eventos cujo horário de envio é posterior à ativação. Estoque e chegada permanecem como rascunhos até confirmar as respectivas fontes de eventos.
 
 ### AVEC
 
-Cadastre o token da unidade em **Painel master → Credenciais**. Quando `AVEC_SNAPSHOT_CODES` estiver definido, o serviço coleta a primeira página dos relatórios configurados a cada hora e armazena a resposta em `avec_report_snapshots`, acessível ao servidor. A conversão desses relatórios em clientes, serviços, agendamentos e eventos de automação depende de respostas AVEC representativas. O catálogo de relatórios descreve os parâmetros conhecidos.
+Cadastre o token da unidade em **Painel master → Integrações**. Quando `AVEC_SNAPSHOT_CODES` estiver definido, o serviço coleta a primeira página dos relatórios configurados a cada hora e armazena a resposta em `avec_report_snapshots`, acessível ao servidor. A conversão desses relatórios em clientes, serviços, agendamentos e eventos de automação depende de respostas AVEC representativas. O catálogo de relatórios descreve os parâmetros conhecidos. No painel master, **Testar AVEC** consulta o relatório 0004 e mostra quantos registros retornaram na primeira página.
 
 ## Desenvolvimento
 

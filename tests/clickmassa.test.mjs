@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { messagePayload, ProviderError, readCatalog, senderEndpoint, sendMessage } from '../worker/clickmassa.mjs';
-import { dispatchOne } from '../worker/service.mjs';
+import { dispatchOne, syncClickmassa } from '../worker/service.mjs';
 
 const sendUrl = 'https://suporteapi.clickmassa.com.br/v1/api/external/00000000-0000-0000-0000-000000000001';
 const approved = {
@@ -61,6 +61,9 @@ test('envia parâmetros WABA na ordem e QR com nota interna', () => {
   assert.deepEqual(messagePayload({...job,channel_type:'whatsapp',payload:{body:'Texto\nlinha',note:'Equipe'}}),
     {number:'5511999990000',externalKey:'job-1',body:'Texto\nlinha',note:{body:'Equipe'}});
   assert.throws(()=>messagePayload({...job,fields:{}}),/Faltam dados/);
+  assert.deepEqual(messagePayload({...job,test_run:true,fields:{},payload:{test_params:['Equipe','Unidade teste']}}).params,
+    ['Equipe','Unidade teste']);
+  assert.throws(()=>messagePayload({...job,test_run:true,payload:{test_params:['Equipe']}}),/Parâmetros/);
 });
 
 test('credencial de envio fica no header e resposta pending vira aguardando confirmação', async () => {
@@ -85,4 +88,27 @@ test('worker reserva antes de enviar e mantém resultado inconclusivo sem reenvi
   assert.deepEqual(events.map(x=>x[0]),['fs_claim_clickmassa_job','POST','fs_finish_clickmassa_job']);
   assert.equal(events[2][1].p_status,'processing');
   assert.equal(events[2][1].p_external_id,null);
+});
+
+
+test('valida o token por canal e descarta uma sincronização com revisão antiga', async () => {
+  const claims = Buffer.from(JSON.stringify({tenantId:10,sessionId:1,channelType:'waba',exp:Date.now()/1000+600})).toString('base64url');
+  const token = `fake.${claims}.fake`;
+  const args = {
+    establishment:'unit-1', revision:'r1',dispatchEnabled:true,
+    settings:{tenantId:'10',email:'test@example.test',password:'fake-login',senders:{
+      1:{url:sendUrl,token}, 2:{url:sendUrl,token}
+    }},
+    lookup:async()=>({channels:[{external_id:'1',type:'waba',active:true},{external_id:'2',type:'waba',active:true}],templates:[]}),
+    rpc:async (name,data)=>{
+      assert.equal(name,'fs_commit_clickmassa_sync');
+      assert.equal(data.p_revision,'r1');
+      assert.equal(data.p_state,'sender_error');
+      assert.deepEqual(data.p_channels.map(x=>x.dispatch_ready),[true,false]);
+      assert.equal(JSON.stringify(data).includes(token),false);
+      return false;
+    },
+  };
+  const result=await syncClickmassa(args);
+  assert.equal(result.accepted,false);
 });

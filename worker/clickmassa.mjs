@@ -137,7 +137,12 @@ export function messagePayload(job) {
   if (!Array.isArray(fields) || !fields.every((key, index) => key === String(index + 1))) {
     throw new Error('Modelo WABA com parâmetros não suportados.');
   }
-  return { ...common, templateId: job.provider_template_id, params: fields.map(key => valueFor(job, mapping[key])) };
+  const params = job.test_run ? job.payload.test_params : fields.map(key => valueFor(job, mapping[key]));
+  if (!Array.isArray(params) || params.length !== fields.length ||
+      params.some(value => typeof value !== 'string' || !value.trim() || value.length > 1024)) {
+    throw new Error('Parâmetros do modelo inválidos.');
+  }
+  return { ...common, templateId: job.provider_template_id, params };
 }
 
 export async function sendMessage({ url, token }, body, fetchImpl = fetch) {
