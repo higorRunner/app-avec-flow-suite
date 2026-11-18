@@ -12,6 +12,8 @@ Painel web, banco Supabase e serviço de processamento do próprio FlowSuite no 
 
 A senha Clickmassa é usada para obter a sessão de catálogo. A sessão é obtida de novo a cada sincronização. O token de envio permanece separado para cada canal e só é trocado ao cadastrar uma nova credencial. O Supabase Vault guarda o token AVEC, a senha e as credenciais de envio, e o painel apresenta apenas o estado de configuração. [Supabase Vault](https://supabase.com/docs/guides/database/vault)
 
+O processo registra `serviço iniciado para a unidade` ao iniciar. A conexão com o Supabase atualiza o sinal de atividade independentemente da sincronização do catálogo. Nos logs do serviço privado, uma unidade ausente ou inativa indica que é preciso conferir o UUID. Falhas de RPC incluem o nome da função, o status HTTP e o código de erro recebido do Supabase, quando disponível.
+
 A configuração da V4 por variáveis funciona como fallback até que a primeira conta de catálogo seja salva no painel. Depois de migrar, remova `CLICKMASSA_EMAIL`, `CLICKMASSA_PASSWORD`, `CLICKMASSA_TENANT_ID` e as credenciais dos canais das variáveis do serviço. A opção `FLOWSUITE_SEND_ENABLED=false` pausa todos os envios do serviço quando configurada. Remova essa opção para o painel controlar a liberação de cada canal. Caso o login exija CAPTCHA ou MFA, use uma conta ou credencial de integração autorizada pelo Clickmassa.
 
 Para coletar amostras AVEC, configure opcionalmente `AVEC_SNAPSHOT_CODES` com códigos separados por vírgula, como `0004`. Use relatórios que não exijam parâmetros adicionais.

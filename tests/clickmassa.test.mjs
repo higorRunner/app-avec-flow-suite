@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { messagePayload, ProviderError, readCatalog, senderEndpoint, sendMessage } from '../worker/clickmassa.mjs';
-import { dispatchOne, syncClickmassa } from '../worker/service.mjs';
+import { dispatchOne, syncClickmassa, run } from '../worker/service.mjs';
 
 const sendUrl = 'https://suporteapi.clickmassa.com.br/v1/api/external/00000000-0000-0000-0000-000000000001';
 const approved = {
@@ -111,4 +111,43 @@ test('valida o token por canal e descarta uma sincronização com revisão antig
   };
   const result=await syncClickmassa(args);
   assert.equal(result.accepted,false);
+});
+
+test('conta salva no painel funciona com variável antiga incompleta e mantém sinal durante sincronização', async () => {
+  const controller = new AbortController();
+  const calls = [];
+  let syncing = false;
+  let heartbeatDuringSync = false;
+  const timeout = setTimeout(()=>controller.abort(), 23000);
+  try {
+    await run({
+      FLOWSUITE_ESTABLISHMENT_ID:'00000000-0000-0000-0000-000000000001',
+      CLICKMASSA_EMAIL:'old@example.test',
+    }, {
+      signal:controller.signal,
+      rpcImpl:async (name)=>{
+        calls.push(name);
+        if(name==='fs_clickmassa_worker_state'){
+          if(syncing){ heartbeatDuringSync=true;controller.abort(); }
+          return {revision:'saved'};
+        }
+        if(name==='fs_clickmassa_worker_settings'){
+          return {email:'saved@example.test',password:'fake',tenantId:'10',senders:{}};
+        }
+        if(name==='fs_commit_clickmassa_sync') return true;
+        return null;
+      },
+      lookup:async ({email})=>{
+        assert.equal(email,'saved@example.test');
+        syncing=true;
+        await new Promise(resolve=>controller.signal.addEventListener('abort',resolve,{once:true}));
+        return {channels:[],templates:[]};
+      },
+    });
+    assert(calls.includes('fs_clickmassa_worker_settings'));
+    assert(heartbeatDuringSync);
+  } finally {
+    clearTimeout(timeout);
+    controller.abort();
+  }
 });

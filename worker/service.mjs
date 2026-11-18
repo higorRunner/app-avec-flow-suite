@@ -81,7 +81,14 @@ function supabaseRpc(env) {
       method: 'POST', headers: { apikey: key, Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(input), redirect: 'error', signal: AbortSignal.timeout(20000),
     });
-    if (!response.ok) throw new Error(`Supabase: ${name} retornou HTTP ${response.status}.`);
+    if (!response.ok) {
+      let code = '';
+      try {
+        const result = await response.json();
+        if (/^[A-Z0-9]{5,12}$/.test(result?.code || '')) code = ` [${result.code}]`;
+      } catch { /* The HTTP status still identifies an invalid response. */ }
+      throw new Error(`Supabase: ${name} retornou HTTP ${response.status}${code}.`);
+    }
     if (response.status !== 204) return response.json();
   };
 }
@@ -124,28 +131,45 @@ async function poll(task, delay, label, signal) {
   }
 }
 
-export async function run(env) {
+export async function run(env, { rpcImpl, signal, lookup = readCatalog } = {}) {
   const establishment = required(env, 'FLOWSUITE_ESTABLISHMENT_ID');
   if (!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(establishment)) throw new Error('UUID do estabelecimento inválido.');
-  const rpc = supabaseRpc(env);
+  const rpc = rpcImpl || supabaseRpc(env);
   const p_est = establishment;
-  const legacy = environmentSettings(env);
   const reportCodes = [...new Set((env.AVEC_SNAPSHOT_CODES || '').split(',').map(code => code.trim()).filter(Boolean))];
   if (reportCodes.some(code => !/^\d{4}$/.test(code))) throw new Error('Informe códigos AVEC de quatro dígitos.');
   const controller = new AbortController();
-  for (const signal of ['SIGTERM', 'SIGINT']) process.once(signal, () => controller.abort());
+  const shutdown = () => controller.abort();
+  for (const event of ['SIGTERM', 'SIGINT']) process.once(event, shutdown);
+  signal?.addEventListener('abort', shutdown, { once: true });
+  if(signal?.aborted) controller.abort();
+  console.log(`FlowSuite: serviço iniciado para a unidade ${establishment}.`);
 
   let synced = false;
+  let workerState = null;
   let revisionSeen;
   let nextSync = 0;
   let senders = new Map();
+  const heartbeat = poll(async () => {
+    try {
+      workerState = await rpc('fs_clickmassa_worker_state',{ p_est });
+      if(!workerState) {
+        synced = false;
+        console.error('FlowSuite: unidade ausente ou inativa. Confira o UUID do serviço.');
+      }
+    } catch(error) {
+      workerState = null;
+      synced = false;
+      throw error;
+    }
+  }, 10_000, 'conexão com Supabase', controller.signal);
+
   const catalog = poll(async () => {
-    const state = await rpc('fs_clickmassa_worker_state',{ p_est });
-    if(!state){
+    if(!workerState){
       synced = false;
       return;
     }
-    const revision = state.revision;
+    const revision = workerState.revision;
     if(revision===revisionSeen && Date.now()<nextSync) return;
     const changed = revision!==revisionSeen;
     if(changed) synced = false;
@@ -153,14 +177,14 @@ export async function run(env) {
     nextSync = Date.now() + 60_000;
     const settings = revision
       ? await rpc('fs_clickmassa_worker_settings',{ p_est,p_revision:revision })
-      : legacy;
+      : environmentSettings(env);
     if(!settings) {
       synced = false;
       return;
     }
     synced = false;
     const dispatchEnabled = revision ? env.FLOWSUITE_SEND_ENABLED!=='false' : env.FLOWSUITE_SEND_ENABLED==='true';
-    const result = await syncClickmassa({rpc,establishment,settings,revision,dispatchEnabled});
+    const result = await syncClickmassa({rpc,establishment,settings,revision,dispatchEnabled,lookup});
     if(result.accepted){
       senders = result.senders;
       synced = true;
@@ -211,7 +235,12 @@ export async function run(env) {
     });
   }, 10_000, 'teste AVEC', controller.signal);
 
-  await Promise.all([catalog, queue, automations, avec, avecTest]);
+  try {
+    await Promise.all([heartbeat, catalog, queue, automations, avec, avecTest]);
+  } finally {
+    for (const event of ['SIGTERM', 'SIGINT']) process.removeListener(event, shutdown);
+    signal?.removeEventListener('abort', shutdown);
+  }
 }
 
 if (process.argv[1] && process.argv[1].replaceAll('\\','/').endsWith('/worker/service.mjs')) {
