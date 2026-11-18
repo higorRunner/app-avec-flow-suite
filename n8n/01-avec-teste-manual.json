@@ -1,0 +1,179 @@
+{
+  "name": "FlowSuite | AVEC | Testar relatório (manual, 1 página)",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "executar-manualmente",
+      "name": "Executar manualmente",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "p1",
+              "name": "establishment_id",
+              "value": "COLE_UUID_DO_ESTABELECIMENTO",
+              "type": "string"
+            },
+            {
+              "id": "p2",
+              "name": "report_code",
+              "value": "0004",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "parâmetros-do-teste",
+      "name": "Parâmetros do teste",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        470,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT establishment_id::text, avec_token, $2::text AS report_code FROM public.integration_secrets WHERE establishment_id = $1::uuid AND avec_token IS NOT NULL",
+        "options": {
+          "queryReplacement": "={{ [$json.establishment_id, $json.report_code] }}"
+        }
+      },
+      "id": "buscar-token-no-banco",
+      "name": "Buscar token no banco",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        700,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ \"https://api.avec.beauty/reports/\" + $json.report_code }}",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "page",
+              "value": "1"
+            },
+            {
+              "name": "limit",
+              "value": "250"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ $json.avec_token }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "consultar-avec-pagina-1",
+      "name": "Consultar AVEC pagina 1",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        930,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "return $input.all().map(item=>{const d=item.json||{};const body=d.Data||d.data||d;const rows=body.Result||body.result||d.Result||d.result;return {json:{status:\"consultado\",report:body.Report||d.Report||null,quantidade:Array.isArray(rows)?rows.length:null,hasMore:body.HasMore??d.HasMore??null,campos: Object.keys(body).filter(k=>!/[token|secret|password]/i.test(k)).slice(0,30)}};});"
+      },
+      "id": "resumo-sem-dados-pessoais",
+      "name": "Resumo sem dados pessoais",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1160,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Executar manualmente": {
+      "main": [
+        [
+          {
+            "node": "Parâmetros do teste",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parâmetros do teste": {
+      "main": [
+        [
+          {
+            "node": "Buscar token no banco",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Buscar token no banco": {
+      "main": [
+        [
+          {
+            "node": "Consultar AVEC pagina 1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consultar AVEC pagina 1": {
+      "main": [
+        [
+          {
+            "node": "Resumo sem dados pessoais",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "none",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": false
+  },
+  "active": false,
+  "pinData": {},
+  "tags": []
+}

@@ -4,3 +4,7 @@ docs
 config.example.js
 .htaccess
 .git
+.test-deps
+n8n
+integrations
+tests

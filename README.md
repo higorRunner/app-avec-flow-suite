@@ -1,87 +1,53 @@
-# FlowSuite — painel AVEC / Clickmassa
+# FlowSuite v3 — UX, Segurança e kit n8n
 
-Aplicação web estática (HTML + CSS + JS), login por e-mail no Supabase, painel master, painel de estabelecimentos, configurações de 8 automações, envio manual em fila, catálogos, relatórios e leitura de `window.postMessage` do plugin.
+Versão evolutiva **baseada na v2**. Arquivos estáticos para o EasyPanel, módulo de catálogo AVEC e 3 workflows n8n de diagnóstico **sem envio de mensagens**.
 
-**Importante:** há 9 funcionalidades de negócio: as funções 1–6 e 8–9 configuram automações; a função 7 é o módulo independente de histórico. A aplicação persiste configurações e fila. **Os disparos reais dependem de workflows n8n e dos endpoints das APIs ainda não fornecidos.**
+## O que mudou
 
-## Pastas
+- Dashboard com assistente de implantação contextual: AVEC, Clickmassa, canais, templates e clientes.
+- Interface responsiva com menu para celular, formulários por tipo de automação, seleção dos campos do modelo e prévia da mensagem.
+- Envio manual com busca paginada por nome ou telefone, filtro por serviço concluído e seleção de até 100 clientes por lote.
+- Histórico consultado ao abrir o cliente, com datas no fuso do estabelecimento. O catálogo AVEC carrega quando a tela é acessada.
+- Substituído o indicador de segurança absoluto por indicador de sessão conectada.
+- Verificação no navegador para canal e template ativos do estabelecimento em envio manual.
+- SQL `003_v3_hardening.sql`: valida vínculos entre unidades, editor de regras, consentimento, canal, modelo e histórico dos destinatários. Restringe o acesso a segredos e relatórios brutos.
+- Docs de API n8n completa em formato de contratos (propostos, não endpoints já ativos), checklist de segurança e workflows para testar consultas reais.
 
-```text
-avec-proton-system/
-  index.html
-  config.js               <-- editar este arquivo
-  config.example.js
-  assets/css/app.css
-  assets/js/app.js
-  sql/001_schema.sql
-  sql/002_first_admin.sql
-  docs/CONTRATO_N8N.md
-  Dockerfile
-  nginx.conf
-  .htaccess
+## Como instalar
+
+Para abrir no VS Code, execute na raiz:
+
+```powershell
+python -m http.server 8080 --bind 127.0.0.1
 ```
 
-## Passo a passo — Supabase
+Acesse `http://localhost:8080`. O painel usa o Supabase definido em `config.js`. Use uma configuração de homologação para fazer testes de gravação. O servidor simples é para desenvolvimento local. O Dockerfile serve a aplicação na raiz do domínio via Nginx na porta 80.
 
-1. Crie um projeto Supabase.
-2. No SQL Editor, execute **todo** o conteúdo de `sql/001_schema.sql`.
-3. Em **Authentication → Providers → Email**, habilite e-mail e confirmação de e-mail. Configure SMTP adequado para produção.
-4. Em **Authentication → URL Configuration**, configure a URL oficial do sistema em **Site URL**, incluindo os URLs de redirecionamento necessários.
-5. Em **Project Settings → API**, copie apenas **Project URL** e **anon/public/publishable key** para `config.js`.
-6. Acesse seu site, clique **Criar conta** e confirme o e-mail.
-7. No SQL Editor, edite e execute `sql/002_first_admin.sql` para promover **somente seu e-mail** a master.
-8. Faça logout e login novamente, acesse **Painel master** e crie seu primeiro estabelecimento.
-9. Crie contas para os operadores (cada um confirma seu e-mail). No painel master, use **Acesso** para vincular e-mail ao estabelecimento.
-10. No painel master, configure token AVEC e URL/token Clickmassa. O n8n poderá atualizar o token Clickmassa diretamente em `integration_secrets` via service_role.
+1. Faça backup do banco e aplique `sql/003_v3_hardening.sql` em homologação, após o schema `001`. O SQL pode ser reaplicado.
+2. No `config.js`, configure a URL e a chave **pública** do Supabase, além das origens autorizadas do CRM. Alinhe `connect-src` e `frame-ancestors` no `nginx.conf` sempre que trocar esses domínios. Para Apache, ajuste também o `.htaccess` e habilite `mod_rewrite` e `mod_headers`.
+3. Para testar integrações, importe os workflows da pasta `n8n/` em **Workflows → Import from File**. Configure a conexão PostgreSQL e o estabelecimento no próprio n8n. Esses workflows são de diagnóstico e chegam desativados.
+4. Valide permissões, dados e fluxos em homologação antes de publicar a imagem no EasyPanel.
 
-**Segurança:** `service_role` deve estar **exclusivamente** no n8n/servidor. Nunca no `config.js`, HTML, JavaScript do navegador nem repositório público. A tabela `integration_secrets` não possui políticas SELECT de browser. Alterações de tokens ocorrem por RPC restrita a master.
+## Testes
 
-## Implantar no EasyPanel (Docker)
+```powershell
+node --test --test-isolation=none tests/*.test.mjs
+```
 
-1. Faça upload da pasta para um repositório privado Git (ou envie a pasta com Dockerfile para seu servidor).
-2. Configure `config.js` com a URL e a chave pública antes do build; **não publique tokens privados**.
-3. EasyPanel → New Project → App → fonte Git → Build via Dockerfile.
-4. Porta interna **80**. Configure domínio e HTTPS no EasyPanel.
-5. Configure DNS do domínio apontando para seu servidor.
-6. No Supabase, informe o domínio definitivo no Site URL/Redirect URLs.
-7. Teste login, cadastro de estabelecimento e regras.
-8. Configuração `allowedParentOrigins` deve conter a origem do Proton CRM/Clickmassa que realmente incorpora o iframe (ex.: `https://crm.exemplo.com`).
-9. Abra `https://dominio.com/?estabelecimento=slug&embed=1` no plugin lateral. Sem `embed=1`, interface de painel completo.
+O teste de interface usa Playwright e um Supabase simulado. Com Playwright instalado, execute `python tests/browser_smoke.py`. Defina `FLOWSUITE_TEST_BROWSER` com o caminho para o Edge ou Chromium local se preferir usar um navegador já instalado.
 
-## Implantar na Hostinger (hospedagem HTML/PHP)
+## Arquivos centrais
 
-1. Envie `index.html`, `config.js`, `assets/` e `.htaccess` para `public_html/`.
-2. **Não** envie `sql/`, `docs/`, `README.md` ou credenciais privadas para o diretório público.
-3. Certifique-se de que HTTPS está ativo.
-4. Cadastre o domínio no Supabase Auth.
-5. Abra `https://dominio.com/?estabelecimento=slug`.
+- `docs/API_N8N_CONTRATOS.md` — rotas propostas, autenticação e lógica das 9 funcionalidades.
+- `docs/SEGURANCA_AUDITORIA.md` — interpretação do token em Network, limites atuais e controles de produção.
+- `sql/003_v3_hardening.sql` — constraints de tenant e tabela privada de relatórios brutos.
+- `n8n/01-avec-teste-manual.json` — consulta 1 página, não envia mensagens.
+- `n8n/02-fila-auditoria-dry-run.json` — consulta fila a cada 15 minutos, somente leitura.
+- `n8n/03-estoque-consulta-dry-run.json` — diagnóstico estoque da primeira página; **não** dispara alertas.
+- `integrations/avec-client.mjs` e seus testes — cliente HTTP de relatórios fornecido na v2.
 
-## N8n — tarefas obrigatórias
+## Limitações e segurança
 
-1. A cada 6 horas: renovar token Clickmassa e salvar na tabela `integration_secrets` (e atualizar `integration_status`).
-2. Sincronizar AVEC (clientes, serviços, agendamentos) e Clickmassa (canais, templates, variáveis) em tabelas correspondentes.
-3. Executar scheduler de automações, respeitar critérios, consentimento, limites e idempotência.
-4. Consumir `message_jobs` com status `queued`, buscar credenciais por estabelecimento e enviar pela API real.
-5. Atualizar status de mensagens, histórico e logs.
-6. Para produção, implementar fila/claim atômico, tentativas seguras e política de retenção conforme LGPD.
+Ainda não temos exemplos de resposta AVEC nem documentação do envio Clickmassa. Este pacote **não é um sistema com automações disparando em produção**. Também não há acesso administrativo ao n8n do usuário para teste integrado de credenciais e execução de workflows.
 
-Leia `docs/CONTRATO_N8N.md` antes de montar os fluxos. Os workflows n8n **não estão incluídos**, pois faltam contratos de API e regras finais de negócio.
-
-## Observações
-
-- O mapeamento de variáveis fica em JSON porque ainda não há contrato de campos da API.
-- O painel limita tabelas a 500/1000 registros para não carregar indefinidamente; implemente busca/relatórios server-side para volumes grandes.
-- O `postMessage` não autentica o ticket. Apenas apresenta informações recebidas de origens autorizadas.
-- Para uso em iframe, configure os headers CSP / `frame-ancestors` adequados no proxy, sempre restringindo ao CRM real. Evite bloqueio por `X-Frame-Options: DENY`.
-- Arquivos de configuração de exemplo não devem ser usados para produção sem preenchimento.
-
-## Nova versão v2 — AVEC
-
-- Nova seção **Relatórios AVEC** no painel, com pesquisa e detalhes de **230** operações extraídas da coleção recebida.
-- Mapeamento das nove funcionalidades (8 automações + histórico) aos relatórios correspondentes.
-- Cliente AVEC server-side em `integrations/avec-client.mjs`, com host permitido, token no cabeçalho, limite 250 e paginação `HasMore`.
-- CLI opcional `integrations/avec-cli.mjs` para verificar **apenas no servidor** os campos e a quantidade de registros, com token vindo de variável de ambiente.
-- Testes em `tests/` e mapa técnico em `docs/AVEC_V2.md`.
-- Não altera tabelas ou credenciais da sua instalação atual. Para esta versão, basta fazer deploy do frontend atualizado. O fluxo de envio Clickmassa e as rotinas n8n ainda requerem os endpoints corretos e respostas reais da AVEC.
-
-**Como publicar:** faça backup da versão atual; envie os arquivos v2 ao mesmo repositório no ramo de teste (ou faça merge após revisar); no EasyPanel implante o novo commit. Use `main` somente quando os testes de homologação passarem.
+Os workflows dependem da versão dos nodes instalados no seu n8n. Importe e valide manualmente os campos e credenciais antes de ativar.

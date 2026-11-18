@@ -1,0 +1,87 @@
+{
+  "name": "FlowSuite | Fila | Auditoria somente leitura",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      },
+      "id": "a-cada-15-minutos",
+      "name": "A cada 15 minutos",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT establishment_id::text, count(*) FILTER (WHERE status='queued' AND scheduled_for<=now())::int AS prontos, count(*) FILTER (WHERE status='processing')::int AS processando, count(*) FILTER (WHERE status='failed')::int AS falharam FROM public.message_jobs GROUP BY establishment_id ORDER BY prontos DESC LIMIT 100",
+        "options": {}
+      },
+      "id": "resumo-da-fila",
+      "name": "Resumo da fila",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        520,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "return $input.all().map(item=>({json:{establishment_id:item.json.establishment_id,prontos:Number(item.json.prontos||0),processando:Number(item.json.processando||0),falharam:Number(item.json.falharam||0),modo:\"DRY_RUN_SEM_ENVIOS\"}}));"
+      },
+      "id": "exibir-indicadores",
+      "name": "Exibir indicadores",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        790,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "A cada 15 minutos": {
+      "main": [
+        [
+          {
+            "node": "Resumo da fila",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resumo da fila": {
+      "main": [
+        [
+          {
+            "node": "Exibir indicadores",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "none",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": false
+  },
+  "active": false,
+  "pinData": {},
+  "tags": []
+}

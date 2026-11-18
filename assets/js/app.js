@@ -2,7 +2,8 @@
 const conf = window.FLOWSUITE_CONFIG || {};
 const el = document.getElementById('app');
 const q = new URLSearchParams(location.search);
-const requestedSlug = q.get('estabelecimento') || location.pathname.match(/^\/e\/([a-z0-9-]+)\/?$/)?.[1] || '';
+const requestedSlug = q.get('estabelecimento') || location.pathname.match(/\/e\/([a-z0-9-]+)\/?$/)?.[1] || '';
+const assetBase = new URL('.', document.baseURI);
 const embedded = q.get('embed') === '1';
 if (embedded) document.body.classList.add('embed-mode');
 const MODULES = [
@@ -15,84 +16,367 @@ const MODULES = [
   {type:'stock',icon:'▣',title:'Alerta de estoque',sub:'Produto esgotado',desc:'Notificação para responsável por produto em falta.'},
   {type:'arrival',icon:'⌁',title:'Aviso de chegada',sub:'Check-in',desc:'Avise um responsável quando um cliente chegar.'}
 ];
-const state = {client:null,user:null,profile:null,session:null,establishments:[],current:null,page:'dashboard',modal:null,modules:[],channels:[],templates:[],services:[],customers:[],appointments:[],jobs:[],logs:[],status:null,editing:null,ticket:null,ticketVerified:false,authMode:'login',navOpen:false,loading:false,avecCatalog:[],avecSearch:'',avecReportCode:'0004'};
+const state = {client:null,user:null,profile:null,session:null,establishments:[],current:null,page:'dashboard',modal:null,modules:[],channels:[],templates:[],services:[],customers:[],jobs:[],logs:[],status:null,editing:null,ticket:null,ticketVerified:false,authMode:'login',navOpen:false,loading:false,avecCatalog:[],avecSearch:'',avecReportCode:'0004', avecStatus:'idle', membershipRole:null, manual:{selected:new Set(), page:0, request:0}, tenantRequest:0, authRequest:0};
 const h = (value) => String(value ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmt = (date) => date ? new Intl.DateTimeFormat('pt-BR',{dateStyle:'short',timeStyle:'short'}).format(new Date(date)):'—';
 const dateOnly = (date) => date ? new Intl.DateTimeFormat('pt-BR',{dateStyle:'short'}).format(new Date(date)):'—';
+const statuses={queued:'Na fila',processing:'Processando',sent:'Enviada',delivered:'Entregue',read:'Lida',failed:'Falha',skipped:'Ignorada',canceled:'Cancelada',scheduled:'Agendado',completed:'Concluído',cancelled:'Cancelado',confirmed:'Confirmado'};
+const statusLabel=(status)=>Object.hasOwn(statuses,status)?statuses[status]:status||'—';
 const numeric = (n) => Number(n || 0).toLocaleString('pt-BR');
+const normalizeSearch=(value)=>value.normalize('NFD').replace(/\p{M}/gu,'').toLocaleLowerCase('pt-BR').trim();
 const slugify = (s) => String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().trim().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'');
-const toast = (msg,err=false) => {const node=document.createElement('div');node.className=`toast ${err?'error':''}`;node.textContent=msg;document.getElementById('toast-root').append(node);setTimeout(()=>node.remove(),4200)};
+const toast = (msg,err=false) => {const node=document.createElement('div');node.setAttribute('role',err?'alert':'status');node.className=`toast ${err?'error':''}`;node.textContent=msg;document.getElementById('toast-root').append(node);setTimeout(()=>node.remove(),4200)};
 const apiError=(err)=>toast(err?.message||String(err),true);
 const db=()=>state.client;
-async function queryData(table,callback){let qb=db().from(table).select('*');if(state.current)qb=qb.eq('establishment_id',state.current.id);if(callback)qb=callback(qb);const {data,error}=await qb;if(error)throw error;return data||[]}
+async function queryData(table, callback, columns = '*', tenant = state.current?.id) {
+ let query = db().from(table).select(columns).eq('establishment_id',tenant);
+ if(callback) query=callback(query);
+ const {data,error}=await query;
+ if(error) throw error;
+ return data || [];
+}
+
+async function loadAvecCatalog() {
+ if (state.avecStatus === 'loading' || state.avecStatus === 'ready') return;
+ state.avecStatus = 'loading';
+ try {
+  const response = await fetch(new URL('assets/data/avec-reports.json', assetBase));
+  if (!response.ok) throw Error('Catálogo indisponível');
+  const catalog = await response.json();
+  if (!Array.isArray(catalog.reports)) throw Error('Catálogo inválido');
+  state.avecCatalog = catalog.reports;
+  state.avecStatus = 'ready';
+ } catch {
+  state.avecStatus = 'error';
+ }
+ if (state.user && state.page === 'avec') render();
+}
+
 async function boot(){
- if(!conf.supabaseUrl||!conf.supabaseAnonKey||conf.supabaseUrl.includes('SEU-PROJETO')){el.innerHTML=`<main class="splash"><div class="brand"><span class="brandmark">✦</span>FlowSuite</div><p>Configure <code class="code">config.js</code> com URL e chave pública do Supabase.</p><p class="muted small">Consulte README.md para instalação.</p></main>`;return}
- if(!window.supabase){el.innerHTML='<div class="splash">Biblioteca Supabase não carregou. Verifique sua conexão.</div>';return}
+ if(!conf.supabaseUrl||!conf.supabaseAnonKey||conf.supabaseUrl.includes('SEU-PROJETO')){
+  el.innerHTML='<main class="splash"><strong>FlowSuite</strong><p>O ambiente ainda precisa ser configurado. Solicite acesso ao administrador.</p></main>';
+  return;
+ }
+ if(!window.supabase){el.innerHTML='<div class="splash">Não foi possível carregar a conexão. <button class="btn" data-action="retry-load">Tentar novamente</button></div>';return}
  state.client=window.supabase.createClient(conf.supabaseUrl,conf.supabaseAnonKey,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true}});
  installPostMessage();
- try { const response=await fetch('./assets/data/avec-reports.json',{cache:'no-store'}); if(response.ok){const catalog=await response.json();state.avecCatalog=Array.isArray(catalog.reports)?catalog.reports:[]} } catch(err){console.warn('Catálogo AVEC indisponível',err)}
- const {data:{session}}=await db().auth.getSession();await loadAuth(session);
- db().auth.onAuthStateChange((_evt,session)=>{setTimeout(()=>{if(session?.access_token!==state.session?.access_token || !!session!==!!state.session)loadAuth(session).catch(apiError)},0)});
+ const {data:{session},error}=await db().auth.getSession();
+ if (error) throw error;
+ if (location.hash.includes('type=recovery')) state.authMode='new-password';
+ db().auth.onAuthStateChange((event,next)=>{
+  setTimeout(()=>{
+   if (event==='PASSWORD_RECOVERY') {
+    state.authMode='new-password';
+    state.session=next;
+    renderAuth();
+   } else if (next?.user?.id!==state.session?.user?.id) {
+    loadAuth(next).catch(apiError);
+   } else {
+    state.session=next;
+   }
+  },0);
+ });
+ await loadAuth(session);
 }
-async function loadAuth(session){state.session=session;state.user=session?.user||null;state.page='dashboard';state.modal=null;if(!state.user){renderAuth();return}
- try{const {data:profile,error}=await db().from('profiles').select('*').eq('id',state.user.id).single();if(error)throw error;state.profile=profile;
- const {data:est,error:e}=await db().from('establishments').select('*').order('name');if(e)throw e;state.establishments=est||[];
- const slug= requestedSlug || (localStorage.getItem('flowsuite_tenant')||'');
- state.current=state.establishments.find(x=>x.slug===slug)||state.establishments[0]||null;
- if(requestedSlug&&!state.establishments.some(x=>x.slug===requestedSlug)&&!state.profile.master_admin){state.current=null;toast('Você não possui acesso a este estabelecimento.',true)}
- await loadTenant();render();}catch(err){apiError(err);renderAuth()}}
+
+function clearTenant() {
+ state.tenantRequest++;
+ state.manual.request++;
+ state.manual.selected.clear();
+ state.manual.page=0;
+ Object.assign(state,{modules:[],channels:[],templates:[],services:[],customers:[],jobs:[],logs:[],status:null,membershipRole:null,modal:null,editing:null,loading:false,tenantError:false});
+}
+
+async function loadAuth(session){
+ const request=++state.authRequest;
+ clearTenant();
+ Object.assign(state,{session,user:session?.user||null,page:'dashboard',current:null,profile:null,establishments:[],memberships:[],navOpen:false});
+ if(!state.user){state.ticket=null;state.ticketVerified=false;renderAuth();return}
+ if(state.authMode==='new-password'){renderAuth();return}
+ el.innerHTML='<div class="splash" role="status">Carregando seu ambiente…</div>';
+ const userId=state.user.id;
+ try {
+  const [profile,est,memberships]=await Promise.all([
+   db().from('profiles').select('id,full_name,master_admin').eq('id',userId).single(),
+   db().from('establishments').select('id,name,slug,active,timezone').order('name'),
+   db().from('memberships').select('establishment_id,role').eq('user_id',userId)
+  ]);
+  if(request!==state.authRequest) return;
+  for(const result of [profile,est,memberships]) if(result.error) throw result.error;
+  const slug=requestedSlug || localStorage.getItem('flowsuite_tenant');
+  state.profile=profile.data;
+  state.memberships=memberships.data||[];
+  state.establishments=(est.data||[]).filter(item=>item.active||state.profile.master_admin);
+  state.current=state.establishments.find(x=>x.slug===slug)||(!requestedSlug?state.establishments[0]:null)||null;
+  if(requestedSlug&&!state.current) toast('Você não possui acesso a este estabelecimento.',true);
+  await loadTenant();
+  if(request===state.authRequest) render();
+ }catch(err){
+  if(request!==state.authRequest) return;
+  el.innerHTML='<div class="splash"><p>Não foi possível carregar seu acesso.</p><button class="btn" data-action="retry-access">Tentar novamente</button><button class="btn ghost" data-action="logout">Sair</button></div>';
+  apiError(err);
+ }
+}
+
 async function loadTenant(){
- if(!state.current){Object.assign(state,{modules:[],channels:[],templates:[],services:[],customers:[],appointments:[],jobs:[],logs:[],status:null});return}
- try{const [modules,channels,templates,services,customers,appointments,jobs,logs,stat]=await Promise.all([
- queryData('automations',x=>x.order('created_at',{ascending:false})),queryData('channels',x=>x.order('name')),queryData('templates',x=>x.order('name')),
- queryData('services',x=>x.order('name')),queryData('customers',x=>x.order('name').limit(1000)),queryData('appointments',x=>x.order('scheduled_at',{ascending:false}).limit(1000)),
- queryData('message_jobs',x=>x.order('created_at',{ascending:false}).limit(500)),queryData('integration_logs',x=>x.order('created_at',{ascending:false}).limit(100)),
- db().from('integration_status').select('*').eq('establishment_id',state.current.id).maybeSingle()
- ]);Object.assign(state,{modules,channels,templates,services,customers,appointments,jobs,logs,status:stat.data||null});if(stat.error)throw stat.error;
- }catch(err){apiError(err)}
+ const request=++state.tenantRequest;
+ const tenant=state.current?.id;
+ if (!tenant) return;
+ state.membershipRole=state.memberships.find(item=>item.establishment_id===tenant)?.role||null;
+ state.loading=true;
+ state.tenantError=false;
+ try {
+  const [modules,channels,templates,services,customers,jobs,logs,stat]=await Promise.all([
+   queryData('automations',x=>x.order('created_at',{ascending:false})),
+   queryData('channels',x=>x.order('name'),'id,name,type,active,external_id'),
+   queryData('templates',x=>x.order('name'),'id,name,body,status,variables'),
+   queryData('services',x=>x.order('name'),'id,name,external_id,default_return_days,active'),
+   queryData('customers',x=>x.order('name').limit(1000),'id,name,phone'),
+   queryData('message_jobs',x=>x.order('created_at',{ascending:false}).limit(500),'id,created_at,customer_id,source,status,error_message,customers(name)'),
+   queryData('integration_logs',x=>x.order('created_at',{ascending:false}).limit(100),'id,created_at,source,event,status'),
+   db().from('integration_status').select('*').eq('establishment_id',tenant).maybeSingle()
+  ]);
+  if(request!==state.tenantRequest) return;
+  if(stat.error) throw stat.error;
+  Object.assign(state,{modules,channels,templates,services,customers,jobs,logs,status:stat.data||null});
+ }catch(err){
+  if(request!==state.tenantRequest) return;
+  state.tenantError=true;
+  apiError(err);
+ }finally{
+  if(request===state.tenantRequest) state.loading=false;
+ }
 }
+
 function renderAuth(){
  const signup=state.authMode==='signup',reset=state.authMode==='reset';
- el.innerHTML=`<div class="auth-shell"><aside class="auth-art"><div class="brand"><div class="brandmark">✦</div><span>FlowSuite</span></div><div class="auth-hero"><h1>Relacionamentos que <span class="gradient-text">evoluem sozinhos.</span></h1><p>Orquestre mensagens, personalize a jornada do cliente e acompanhe cada resultado em um só lugar.</p></div><span class="muted small">AVEC + Clickmassa + Supabase</span></aside><section class="auth-right"><div class="auth-card"><div class="brand" style="margin-bottom:32px"><div class="brandmark">✦</div> FlowSuite</div><h2>${reset?'Recuperar acesso':signup?'Criar sua conta':'Bem-vindo de volta'}</h2><p class="muted subtitle">${reset?'Enviaremos um link para seu e-mail.':signup?'Confirme seu e-mail antes de entrar.':'Entre na central para acessar seu estabelecimento.'}</p><form id="auth-form">${signup?field('Nome completo','name','text','Seu nome'):''}${field('E-mail','email','email','nome@empresa.com')} ${!reset?field('Senha','password','password',signup?'Mínimo de 8 caracteres':'Sua senha'):''}<button class="btn primary" type="submit">${reset?'Enviar link de recuperação':signup?'Criar conta':'Entrar no painel'} →</button></form><div class="center" style="margin-top:23px"><button class="btn ghost small" data-action="auth-mode" data-mode="${signup||reset?'login':'signup'}">${signup||reset?'Voltar ao login':'Criar conta'}</button>${!signup&&!reset?'<button class="btn ghost small" data-action="auth-mode" data-mode="reset">Esqueci minha senha</button>':''}</div></div></section></div>`;
+ if(state.authMode==='new-password'){
+  el.innerHTML=`<main class="auth-right"><section class="auth-card"><h1>Definir nova senha</h1><form id="auth-form" class="stack">${field('Nova senha','password','password','','','required minlength="8" autocomplete="new-password"')}${field('Confirme a nova senha','confirm_password','password','','','required minlength="8" autocomplete="new-password"')}<button type="submit" class="btn primary">Salvar nova senha</button></form></section></main>`;
+  return;
+ }
+ el.innerHTML=`<div class="auth-shell"><aside class="auth-art"><div class="brand"><div class="brandmark">✦</div><span>FlowSuite</span></div><div class="auth-hero"><h1>Relacionamentos que <span class="gradient-text">evoluem sozinhos.</span></h1><p>Orquestre mensagens, personalize a jornada do cliente e acompanhe cada resultado em um só lugar.</p></div><span class="muted small">AVEC + Clickmassa + Supabase</span></aside><section class="auth-right"><div class="auth-card"><div class="brand" style="margin-bottom:32px"><div class="brandmark">✦</div> FlowSuite</div><h2>${reset?'Recuperar acesso':signup?'Criar sua conta':'Bem-vindo de volta'}</h2><p class="muted subtitle">${reset?'Enviaremos um link para seu e-mail.':signup?'Confirme seu e-mail antes de entrar.':'Entre na central para acessar seu estabelecimento.'}</p><form id="auth-form">${signup?field('Nome completo','name','text','Seu nome'):''}${field('E-mail','email','email','nome@empresa.com','','required autocomplete="email"')} ${!reset?field('Senha','password','password',signup?'Mínimo de 8 caracteres':'Sua senha'):''}<button class="btn primary" type="submit">${reset?'Enviar link de recuperação':signup?'Criar conta':'Entrar no painel'} →</button></form><div class="center" style="margin-top:23px"><button class="btn ghost small" data-action="auth-mode" data-mode="${signup||reset?'login':'signup'}">${signup||reset?'Voltar ao login':'Criar conta'}</button>${!signup&&!reset?'<button class="btn ghost small" data-action="auth-mode" data-mode="reset">Esqueci minha senha</button>':''}</div></div></section></div>`;
 }
 const field=(label,name,type='text',placeholder='',value='',extra='')=>`<div class="field"><label for="${h(name)}">${h(label)}</label><input class="input" id="${h(name)}" name="${h(name)}" type="${type}" placeholder="${h(placeholder)}" value="${h(value)}" ${extra}></div>`;
 const select=(label,name,options=[],value='',extra='')=>`<div class="field"><label for="${h(name)}">${h(label)}</label><select class="select" id="${h(name)}" name="${h(name)}" ${extra}>${options.map(o=>`<option value="${h(o.value)}" ${String(value)===String(o.value)?'selected':''}>${h(o.label)}</option>`).join('')}</select></div>`;
-const textarea=(label,name,value='',placeholder='')=>`<div class="field"><label for="${h(name)}">${h(label)}</label><textarea class="textarea" id="${h(name)}" name="${h(name)}" placeholder="${h(placeholder)}">${h(value)}</textarea></div>`;
 const opt=(v,label)=>({value:v,label});
 const mod=(type)=>MODULES.find(x=>x.type===type)||{title:type,icon:'⚙'};
-const canManage=()=>state.profile?.master_admin||state.membershipRole==='owner'||state.membershipRole==='manager';
+const canManage=()=>state.current?.active && (state.profile?.master_admin || ['owner','manager'].includes(state.membershipRole));
+const canSend=()=>canManage() || (state.current?.active && state.membershipRole==='operator');
+const activeChannels=()=>state.channels.filter(x=>x.active&&['waba','whatsapp'].includes(x.type));
+const activeTemplates=()=>state.templates.filter(x=>x.status==='active');
 function navItems(){let items=[['dashboard','◫','Visão geral'],['automations','⚡','Automações'],['manual','➤','Envio manual'],['customers','♙','Clientes e histórico'],['reports','▥','Relatórios e envios'],['catalog','▤','Catálogos e serviços'],['avec','▤','Relatórios AVEC'],['ticket','☷','Atendimento aberto'],['settings','⚙','Configurações']];if(state.profile?.master_admin)items.push(['admin','♜','Painel master']);return items}
 function render(){
  if(!state.user){renderAuth();return}const isAdmin=state.page==='admin';let title=isAdmin?'Administração master':state.current?.name||'Nenhum estabelecimento';let main=pageBody();
- el.innerHTML=`<div class="layout"><aside class="sidebar ${state.navOpen?'open':''}"><div class="brand"><div class="brandmark">✦</div><span>FlowSuite</span></div><div><div class="sidebar-caption">Workspace</div>${state.establishments.length?`<select class="select" id="tenant-select" aria-label="Estabelecimento" style="font-size:.79rem">${state.establishments.map(x=>`<option value="${h(x.id)}" ${state.current?.id===x.id?'selected':''}>${h(x.name)}</option>`).join('')}</select>`:'<p class="hint">Sem estabelecimentos</p>'}</div><nav class="nav-list"><div class="sidebar-caption">Navegação</div>${navItems().map(([id,ico,name])=>`<button class="nav-link ${state.page===id?'active':''}" data-action="navigate" data-page="${id}"><span class="nav-icon">${ico}</span><span class="nav-label">${h(name)}</span></button>`).join('')}</nav><div class="sidebar-bottom"><div class="user-mini"><div class="avatar">${h((state.profile?.full_name||state.user.email||'U')[0].toUpperCase())}</div><div style="min-width:0"><strong class="small">${h(state.profile?.full_name||'Usuário')}</strong><div class="muted tiny" style="overflow:hidden;text-overflow:ellipsis">${h(state.user.email)}</div></div></div><button class="nav-link" data-action="logout"><span class="nav-icon">↪</span><span class="logout-label">Sair da conta</span></button></div></aside><div class="main"><header class="topbar"><div class="actions"><button class="btn ghost mobile-menu" data-action="toggle-nav">☰</button><div><strong>${h(isAdmin?'Painel master':title)}</strong><div class="muted tiny">${isAdmin?'Controle de estabelecimentos e acessos':'Central de automações e relacionamento'}</div></div></div><div class="topbar-right"><span class="pill ${state.current?.active===false?'off':''}">● ${state.current?.active===false?'Desativado':'Ambiente seguro'}</span><span class="avatar">${h((state.user.email||'U')[0].toUpperCase())}</span></div></header><main class="content">${main}</main></div></div>${state.modal?modalHtml():''}`;
+ el.innerHTML=`<div class="layout"><button type="button" class="nav-scrim" data-action="toggle-nav" aria-label="Fechar menu" ${state.navOpen?'':'hidden'}></button><aside id="main-sidebar" class="sidebar ${state.navOpen?'open':''}"><div class="brand"><div class="brandmark">✦</div><span>FlowSuite</span></div><div><div class="sidebar-caption">Workspace</div>${state.establishments.length?`<select class="select" id="tenant-select" aria-label="Estabelecimento" style="font-size:.79rem">${!state.current?'<option value="" selected disabled>Selecione um estabelecimento</option>':''}${state.establishments.map(x=>`<option value="${h(x.id)}" ${state.current?.id===x.id?'selected':''}>${h(x.name)}</option>`).join('')}</select>`:'<p class="hint">Sem estabelecimentos</p>'}</div><nav class="nav-list" aria-label="Navegação principal"><div class="sidebar-caption">Navegação</div>${navItems().map(([id,ico,name])=>`<button class="nav-link ${state.page===id?'active':''}" data-action="navigate" data-page="${id}" aria-label="${h(name)}" ${state.page===id?'aria-current="page"':''}><span class="nav-icon">${ico}</span><span class="nav-label">${h(name)}</span></button>`).join('')}</nav><div class="sidebar-bottom"><div class="user-mini"><div class="avatar">${h((state.profile?.full_name||state.user.email||'U')[0].toUpperCase())}</div><div style="min-width:0"><strong class="small">${h(state.profile?.full_name||'Usuário')}</strong><div class="muted tiny" style="overflow:hidden;text-overflow:ellipsis">${h(state.user.email)}</div></div></div><button class="nav-link" data-action="logout" aria-label="Sair da conta"><span class="nav-icon">↪</span><span class="logout-label">Sair da conta</span></button></div></aside><div class="main"><header class="topbar"><div class="actions"><button class="btn ghost mobile-menu" data-action="toggle-nav" aria-label="Menu" aria-controls="main-sidebar" aria-expanded="${state.navOpen}">☰</button><div><strong>${h(isAdmin?'Painel master':title)}</strong><div class="muted tiny">${isAdmin?'Controle de estabelecimentos e acessos':'Central de automações e relacionamento'}</div></div></div><div class="topbar-right"><span class="pill ${state.current?.active===false?'off':''}">● ${state.current?.active===false?'Desativado':'Conectado'}</span><span class="avatar">${h((state.user.email||'U')[0].toUpperCase())}</span></div></header><main class="content" id="main-content">${main}</main></div></div>`;
+ const manualForm=document.getElementById('manual-form');
+ if(manualForm){variablePanel(manualForm);syncRecipientSelection(manualForm);void loadContactPage(true)}
+ if(state.page==='customers') void loadContactPage(false);
+ if(state.page==='avec'&&state.avecStatus==='idle') void loadAvecCatalog();
+ if(state.modal) showModal();
 }
 const head=(title,desc,action='')=>`<div class="page-head"><div><h1>${h(title)}</h1><p>${h(desc)}</p></div><div class="actions">${action}</div></div>`;
-const button=(label,action,attr='',variant='primary')=>`<button class="btn ${variant}" data-action="${action}" ${attr}>${label}</button>`;
-function pageBody(){if(state.page==='admin')return adminPage();if(!state.current)return `${head('Comece por um estabelecimento','Solicite acesso ao administrador master ou cadastre o primeiro estabelecimento.')}${state.profile?.master_admin?button('+ Cadastrar estabelecimento','add-establishment'):''}`;switch(state.page){case'dashboard':return dashboardPage();case'automations':return automationsPage();case'manual':return manualPage();case'customers':return customersPage();case'reports':return reportsPage();case'catalog':return catalogPage();case'avec':return avecPage();case'ticket':return ticketPage();case'settings':return settingsPage();default:return dashboardPage()}}
+const button=(label,action,attr='',variant='primary')=>`<button class="btn ${variant}" type="button" data-action="${action}" ${attr}>${label}</button>`;
+function pageBody(){if(state.page==='admin')return adminPage();if(state.loading)return '<p class="card" role="status">Carregando estabelecimento…</p>';if(state.tenantError)return `<div class="alert">Alguns dados não puderam ser carregados. ${button('Tentar novamente','refresh','','small')}</div>`;if(!state.current)return `${head('Comece por um estabelecimento','Solicite acesso ao administrador master ou cadastre o primeiro estabelecimento.')}${state.profile?.master_admin?button('+ Cadastrar estabelecimento','add-establishment'):''}`;switch(state.page){case'dashboard':return dashboardPage();case'automations':return automationsPage();case'manual':return manualPage();case'customers':return customersPage();case'reports':return reportsPage();case'catalog':return catalogPage();case'avec':return avecPage();case'ticket':return ticketPage();case'settings':return settingsPage();default:return dashboardPage()}}
+function setupChecklist(){
+ const steps=[
+  {ok:!!state.status?.avec_configured,label:'Conectar AVEC',sub:'Cadastre o token da unidade no painel master.',page:state.profile?.master_admin?'admin':'settings'},
+  {ok:!!state.status?.clickmassa_configured,label:'Conectar Clickmassa',sub:'Informe a URL e as credenciais da integração.',page:state.profile?.master_admin?'admin':'settings'},
+  {ok:activeChannels().length>0,label:'Sincronizar canais',sub:'Importe os canais usando a API do Clickmassa.',page:'catalog'},
+  {ok:activeTemplates().length>0,label:'Sincronizar modelos',sub:'Sincronize os modelos disponíveis para envio.',page:'catalog'},
+  {ok:state.customers.length>0,label:'Sincronizar clientes',sub:'Importe os clientes elegíveis do AVEC.',page:'customers'},
+ ];
+ const done=steps.filter(s=>s.ok).length;
+ if(done===steps.length) return '';
+ return `<section class="setup-panel" aria-label="Preparação do estabelecimento"><div class="setup-copy"><h2>Deixe sua operação pronta para enviar</h2><p>Configure as integrações uma vez. Depois, cada automação utiliza seu próprio canal e template.</p><div class="setup-progress"><span style="width:${Math.round(done/steps.length*100)}%"></span></div><small>${done} de ${steps.length} etapas configuradas</small></div><div class="setup-list">${steps.map((s,i)=>`<button class="setup-step ${s.ok?'done':''}" data-action="navigate" data-page="${s.page}"><span class="step-index">${s.ok?'✓':i+1}</span><span><strong>${h(s.label)}</strong><small>${h(s.sub)}</small></span><span aria-hidden="true">↗</span></button>`).join('')}</div></section>`;
+}
 function dashboardPage(){let active=state.modules.filter(a=>a.enabled).length,sent=state.jobs.filter(a=>['sent','delivered','read'].includes(a.status)).length,failed=state.jobs.filter(a=>a.status==='failed').length;
- return `${head('Visão geral','Acompanhe suas automações e a comunicação com seus clientes.',button('＋ Nova automação','new-automation'))}<div class="metrics"><div class="card metric-card"><span class="metric-icon">⚡</span><div class="metric">${numeric(active)}</div><span class="eyebrow">Automações ativas</span></div><div class="card metric-card"><span class="metric-icon">➤</span><div class="metric">${numeric(sent)}</div><span class="eyebrow">Mensagens enviadas*</span></div><div class="card metric-card"><span class="metric-icon">♙</span><div class="metric">${numeric(state.customers.length)}</div><span class="eyebrow">Clientes sincronizados*</span></div><div class="card metric-card"><span class="metric-icon">⚠</span><div class="metric">${numeric(failed)}</div><span class="eyebrow">Falhas registradas*</span></div></div><div class="grid2"><section class="card"><div class="card-heading"><h2>Suas automações</h2>${button('Ver todas','navigate','data-page="automations"','small')}</div>${state.modules.length?state.modules.slice(0,6).map(a=>`<div class="list-row"><div><strong>${h(a.name)}</strong><div class="muted small">${h(mod(a.type).title)}</div></div><span class="badge ${a.enabled?'green':''}">${a.enabled?'Ativa':'Pausada'}</span></div>`).join(''):empty('Nenhuma automação','Configure a primeira regra de envio.')}</section><section class="card"><div class="card-heading"><h2>Integrações</h2>${button('Configurações','navigate','data-page="settings"','small')}</div><div class="list-row"><span>AVEC</span><span class="badge ${state.status?.avec_configured?'green':'amber'}">${state.status?.avec_configured?'Configurado':'Pendente'}</span></div><div class="list-row"><span>Clickmassa / CRM</span><span class="badge ${state.status?.clickmassa_configured?'green':'amber'}">${state.status?.clickmassa_configured?'Configurado':'Pendente'}</span></div><div class="list-row"><span>Canais sincronizados</span><strong>${state.channels.length}</strong></div><div class="list-row"><span>Templates disponíveis</span><strong>${state.templates.length}</strong></div><p class="hint" style="margin-top:17px">* Indicadores baseados nos registros sincronizados para este painel. Para grandes volumes, use agregações no banco.</p></section></div>`}
-function automationsPage(){const cards=MODULES.map(m=>{const count=state.modules.filter(a=>a.type===m.type).length;return `<section class="card module"><div><div class="module-top"><span class="module-icon">${m.icon}</span><span class="badge ${count?'green':''}">${count} regra(s)</span></div><h3 style="margin-top:16px">${m.title}</h3><p>${m.desc}</p></div><div class="footer"><span class="muted tiny">${h(m.sub)}</span>${button('+ Configurar','new-automation',`data-type="${m.type}"`,'small')}</div></section>`}).join('');return `${head('Automações','Crie regras independentes com canal, template e variáveis para cada uma.',button('＋ Nova regra','new-automation'))}<div class="module-grid">${cards}</div><div class="section-title"><h2>Regras cadastradas</h2></div><section class="card">${state.modules.length?table(['Nome','Tipo','Canal','Template','Status','Ações'],state.modules.map(a=>[h(a.name),h(mod(a.type).title),h(state.channels.find(x=>x.id===a.channel_id)?.name||'—'),h(state.templates.find(x=>x.id===a.template_id)?.name||'—'),`<span class="badge ${a.enabled?'green':''}">${a.enabled?'Ativa':'Pausada'}</span>`,`${button('Editar','edit-automation',`data-id="${h(a.id)}"`,'small')} ${button(a.enabled?'Pausar':'Ativar','toggle-automation',`data-id="${h(a.id)}"`,'small')} ${button('Excluir','delete-automation',`data-id="${h(a.id)}"`,'small danger')}`])):empty('Sem regras','Crie uma configuração para começar.')}</section>`}
-const table=(cols,rows)=>`<div class="table-wrap"><table class="table"><thead><tr>${cols.map(c=>`<th>${h(c)}</th>`).join('')}</tr></thead><tbody>${rows.map(row=>`<tr>${row.map(c=>`<td>${c}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+ return `${head('Visão geral','Sua operação, campanhas e integrações em um só lugar.',canManage()?button('＋ Nova automação','new-automation'):'')}${setupChecklist()}<div class="metrics"><div class="card metric-card"><span class="metric-icon">⚡</span><div class="metric">${numeric(active)}</div><span class="eyebrow">Automações ativas</span></div><div class="card metric-card"><span class="metric-icon">➤</span><div class="metric">${numeric(sent)}</div><span class="eyebrow">Mensagens enviadas*</span></div><div class="card metric-card"><span class="metric-icon">♙</span><div class="metric">${numeric(state.customers.length)}</div><span class="eyebrow">Clientes sincronizados*</span></div><div class="card metric-card"><span class="metric-icon">⚠</span><div class="metric">${numeric(failed)}</div><span class="eyebrow">Falhas registradas*</span></div></div><div class="grid2"><section class="card"><div class="card-heading"><h2>Suas automações</h2>${button('Ver todas','navigate','data-page="automations"','small')}</div>${state.modules.length?state.modules.slice(0,6).map(a=>`<div class="list-row"><div><strong>${h(a.name)}</strong><div class="muted small">${h(mod(a.type).title)}</div></div><span class="badge ${a.enabled?'green':''}">${a.enabled?'Ativa':'Pausada'}</span></div>`).join(''):empty('Nenhuma automação','Configure a primeira regra de envio.')}</section><section class="card"><div class="card-heading"><h2>Integrações</h2>${button('Configurações','navigate','data-page="settings"','small')}</div><div class="list-row"><span>AVEC</span><span class="badge ${state.status?.avec_configured?'green':'amber'}">${state.status?.avec_configured?'Configurado':'Pendente'}</span></div><div class="list-row"><span>Clickmassa / CRM</span><span class="badge ${state.status?.clickmassa_configured?'green':'amber'}">${state.status?.clickmassa_configured?'Configurado':'Pendente'}</span></div><div class="list-row"><span>Canais sincronizados</span><strong>${state.channels.length}</strong></div><div class="list-row"><span>Templates disponíveis</span><strong>${state.templates.length}</strong></div><p class="hint" style="margin-top:17px">* Indicadores baseados nos registros sincronizados para este painel. Para grandes volumes, use agregações no banco.</p></section></div>`}
+function automationsPage(){const cards=MODULES.map(m=>{const count=state.modules.filter(a=>a.type===m.type).length;return `<section class="card module"><div><div class="module-top"><span class="module-icon">${m.icon}</span><span class="badge ${count?'green':''}">${count} regra(s)</span></div><h3 style="margin-top:16px">${m.title}</h3><p>${m.desc}</p></div><div class="footer"><span class="muted tiny">${h(m.sub)}</span>${canManage()?button('+ Configurar','new-automation',`data-type="${m.type}"`,'small'):''}</div></section>`}).join('');return `${head('Automações','Crie regras independentes com canal, template e variáveis para cada uma.',canManage()?button('＋ Nova regra','new-automation'):'')}<div class="module-grid">${cards}</div><div class="section-title"><h2>Regras cadastradas</h2></div><section class="card">${state.modules.length?table(['Nome','Tipo','Canal','Template','Status','Ações'],state.modules.map(a=>[h(a.name),h(mod(a.type).title),h(state.channels.find(x=>x.id===a.channel_id)?.name||'—'),h(state.templates.find(x=>x.id===a.template_id)?.name||'—'),`<span class="badge ${a.enabled?'green':''}">${a.enabled?'Ativa':'Pausada'}</span>`,`${canManage()?`${button('Editar','edit-automation',`data-id="${h(a.id)}"`,'small')} ${button(a.enabled?'Pausar':'Ativar','toggle-automation',`data-id="${h(a.id)}"`,'small')} ${button('Excluir','delete-automation',`data-id="${h(a.id)}"`,'small danger')}`:'—'}`])):empty('Sem regras','Crie uma configuração para começar.')}</section>`}
+const table=(cols,rows)=>`<div class="table-wrap" tabindex="0" role="region" aria-label="Tabela com rolagem"><table class="table"><thead><tr>${cols.map(c=>`<th scope="col">${h(c)}</th>`).join('')}</tr></thead><tbody>${rows.map(row=>`<tr>${row.map(c=>`<td>${c}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
 const empty=(title,desc)=>`<div class="empty"><span class="emoji">◇</span><strong>${h(title)}</strong><span class="small">${h(desc)}</span></div>`;
-function manualPage(){const choices=state.customers.filter(c=>c.marketing_opt_in&&!c.opted_out_at);return `${head('Envio manual','Selecione clientes, canal e template. O n8n processará a fila.')}${!choices.length?'<div class="alert">Nenhum cliente sincronizado com consentimento de marketing. O envio manual fica indisponível até existirem clientes elegíveis.</div>':''}<div class="grid2" style="margin-top:18px"><section class="card"><h2 style="margin-bottom:18px">Nova campanha manual</h2><form id="manual-form" class="stack">${select('Canal','channel_id',[opt('','Selecione um canal'),...state.channels.filter(c=>['waba','whatsapp'].includes(c.type)&&c.active).map(x=>opt(x.id,`${x.name} (${x.type})`))])}${select('Template','template_id',[opt('','Selecione um template'),...state.templates.filter(t=>t.status==='active').map(x=>opt(x.id,x.name))])}${select('Filtrar por serviço realizado','service_id',[opt('','Todos os serviços'),...state.services.map(s=>opt(s.id,s.name))])}${textarea('Variáveis para envio (JSON)','manual_mapping','{}','{"1":"customer.name"}')}<div class="field"><label for="customer-search">Pesquisar cliente</label><input class="input" id="customer-search" type="search" placeholder="Nome ou telefone"></div><div class="field"><label>Clientes elegíveis (selecione um ou mais)</label><div id="manual-customers" style="max-height:260px;overflow:auto;border:1px solid var(--line);padding:10px;border-radius:10px">${choices.slice(0,200).map(c=>`<label class="check-row" data-customer-row="${h((c.name+' '+(c.phone||'')).toLowerCase())}" style="padding:6px"><input type="checkbox" name="customer_ids" value="${h(c.id)}">${h(c.name)} <span class="muted tiny">${h(c.phone||'')}</span></label>`).join('')}</div><span class="hint">Exibe até 200 resultados. Para maiores volumes implemente busca paginada no servidor.</span></div><label class="check-row"><input type="checkbox" name="confirm_consent" required>Confirmo finalidade legítima e consentimento dos destinatários.</label><button class="btn primary" type="submit" ${!choices.length?'disabled':''}>Enfileirar envio manual</button></form></section><section class="card"><h2 style="margin-bottom:18px">Como funciona?</h2><div class="stack"><p class="muted small">1. Sincronize serviços, clientes, canais e templates por n8n.</p><p class="muted small">2. Escolha os destinatários elegíveis e confirme o envio.</p><p class="muted small">3. O painel registra um job para cada cliente, sem expor token da API.</p><p class="muted small">4. O n8n busca o token/URL do estabelecimento no Supabase e realiza o envio.</p><div class="alert info">Os jobs ficam com status <strong>queued</strong> até serem consumidos pelo fluxo n8n. Enfileirar não significa mensagem enviada.</div></div></section></div>`}
-function customersPage(){return `${head('Clientes e histórico','Dados sincronizados do AVEC; visualize serviços e agendamentos.') }<section class="card"><div class="input-row" style="margin-bottom:18px"><input class="input" id="customer-filter" placeholder="Buscar por nome ou telefone"><button class="btn" data-action="refresh">Atualizar</button></div><div id="customer-results">${customerTable(state.customers.slice(0,100))}</div><p class="hint" style="margin-top:13px">A busca nesta página opera sobre os primeiros 1.000 clientes sincronizados. Para bases maiores, configure busca paginada no Supabase.</p></section>`}
+const sampleFields = [
+ ['customer.name','Nome do cliente','Mariana'],
+ ['customer.phone','Telefone do cliente','+55 11 99999-0000'],
+ ['customer.email','E-mail do cliente','mariana@exemplo.com'],
+ ['customer.birthday','Aniversário','18/11'],
+ ['service.name','Nome do serviço','Corte'],
+ ['appointment.scheduled_at','Data e hora do agendamento','18/11 às 14:00'],
+ ['appointment.completed_at','Conclusão do atendimento','18/11 às 15:00'],
+ ['establishment.name','Nome do estabelecimento','Seu estabelecimento'],
+ ['product.name','Nome do produto','Shampoo'],
+ ['product.stock','Quantidade em estoque','3']
+].map(([value,label,example])=>({value,label,example}));
+
+function variableKeys(template, mapping) {
+ const keys=new Map();
+ function add(key,label=key) {
+  if(key!==undefined&&key!==null&&String(key).trim()&&!keys.has(String(key))) keys.set(String(key),String(label||key));
+ }
+ const declared=template?.variables;
+ if(Array.isArray(declared)) declared.forEach((item,index)=>{
+  if(item&&typeof item==='object') add(item.key??item.position??item.name??item.id??index+1,item.label??item.name);
+  else add(item);
+ });
+ else if(declared&&typeof declared==='object') Object.entries(declared).forEach(([key,value])=>add(key,value?.label??(typeof value==='string'?value:key)));
+ for(const match of (template?.body||'').matchAll(/\{\{\s*([^{}]+?)\s*\}\}/g)) add(match[1]);
+ Object.keys(mapping).forEach(key=>add(key));
+ return keys;
+}
+
+function variablePanel(form, mapping = {}, previous) {
+ const target=form.querySelector('[data-variables]');
+ const template=state.templates.find(x=>x.id===form.elements.template_id.value);
+ target.dataset.template=template?.id||'';
+ if(!template){
+  target.innerHTML='<p class="hint">Escolha um modelo para ver a mensagem e seus campos.</p>';
+  return;
+ }
+ const manual=form.id==='manual-form';
+ const fields=sampleFields.filter(x=>manual
+  ? !x.value.startsWith('appointment.')&&!x.value.startsWith('product.')&&(form.elements.service_id.value||x.value!=='service.name')
+  : form.elements.type.value==='stock'||!x.value.startsWith('product.'));
+ target.innerHTML=`<div class="message-preview"><strong>Prévia da mensagem</strong><p data-template-preview></p></div>${
+  [...variableKeys(template,mapping)].map(([key,label],index)=>{
+   const saved=mapping[key];
+   const legacy=Object.hasOwn(mapping,key)&&!fields.some(x=>x.value===saved);
+   const choices=[opt('','Escolha a informação'),...fields];
+   if(legacy) choices.push(opt('__saved','Manter valor configurado'));
+   const draft=previous&&Object.hasOwn(previous,key)?previous[key]:legacy?'__saved':saved;
+   return `<div data-variable data-key="${h(key)}">${select(`Campo ${label}`,`template-field-${index}`,choices,choices.some(x=>x.value===draft)?draft:'','required')}</div>`;
+  }).join('')||'<p class="hint">Este modelo não tem campos para preencher.</p>'}`;
+ target.savedValues=structuredClone(mapping);
+ updateMessagePreview(form);
+}
+
+function readVariableMapping(form, draft = false) {
+ const target=form.querySelector('[data-variables]');
+ return Object.fromEntries([...target.querySelectorAll('[data-variable]')].map(row=>{
+  const key=row.dataset.key,value=row.querySelector('select').value;
+  return [key,value==='__saved'&&!draft?target.savedValues[key]:value];
+ }).filter(([,value])=>value!==''));
+}
+
+function updateMessagePreview(form) {
+ const preview=form.querySelector('[data-template-preview]');
+ if(!preview) return;
+ const template=state.templates.find(x=>x.id===form.elements.template_id.value);
+ const mapping=readVariableMapping(form);
+ preview.textContent=template.body?.replace(/\{\{\s*([^{}]+?)\s*\}\}/g,(_token,key)=>{
+  const value=Object.hasOwn(mapping,key)?mapping[key]:null;
+  return sampleFields.find(x=>x.value===value)?.example||`[${key}]`;
+ })||'O texto deste modelo ainda não foi sincronizado.';
+}
+
+function manualPage(){
+ return `${head('Envio manual','Escolha o canal, personalize a mensagem e selecione os destinatários.')}
+ ${!canSend()?'<p class="alert">Um operador ou gestor pode adicionar mensagens à fila.</p>':
+ !activeChannels().length||!activeTemplates().length?`<div class="alert">Sincronize pelo menos um canal de WhatsApp e um modelo ativos para começar. ${button('Abrir catálogos','navigate','data-page="catalog"','small')}</div>`:
+ `<form id="manual-form" class="stack">
+ <div class="grid2 manual-grid"><section class="card stack"><h2>Mensagem</h2>
+ ${select('Canal','channel_id',[opt('','Selecione um canal'),...activeChannels().map(x=>opt(x.id,x.name))],'','required')}
+ ${select('Modelo de mensagem','template_id',[opt('','Selecione um modelo'),...activeTemplates().map(x=>opt(x.id,x.name))],'','required')}
+ <div class="stack" data-variables></div>
+ </section><section class="card stack"><h2>Destinatários</h2>
+ ${select('Serviço já realizado','service_id',[opt('','Todos os serviços'),...state.services.map(x=>opt(x.id,x.name))])}
+ ${field('Buscar por nome ou telefone','customer-search','search','Ex. Mariana ou 1199999')}
+ <div class="selection-bar"><strong id="manual-count" aria-live="polite">0 selecionados</strong>${button('Limpar seleção','clear-recipients','','small')}</div>
+ <div id="manual-customers" class="recipient-list" aria-busy="true"></div>
+ <div class="pager" id="manual-pager" aria-label="Páginas de clientes"></div>
+ </section></div>
+ <section class="card stack"><label class="check-row"><input type="checkbox" name="confirm_consent" required>Confirmo que os destinatários autorizaram este envio.</label>
+ <div class="actions"><button class="btn primary" type="submit" disabled>Adicionar à fila</button><span class="hint">O processamento da fila é feito pelo n8n.</span></div></section>
+ </form>`}`;
+}
+
+function customersPage(){
+ return `${head('Clientes e histórico','Encontre um cliente e consulte seus agendamentos e mensagens.')}
+ <section class="card stack">${field('Buscar por nome ou telefone','customer-filter','search','Ex. Mariana ou 1199999')}
+ <div id="customer-results" aria-busy="true"></div>
+ <div class="pager" id="customer-pager" aria-label="Páginas de clientes"></div></section>`;
+}
+
+const contactPageSize=25;
+const browse={page:0,request:0};
+let contactSearchTimer;
+
+function syncRecipientSelection(form){
+ if(!form?.isConnected) return;
+ const count=state.manual.selected.size;
+ form.querySelector('#manual-count').textContent=`${count} ${count===1?'selecionado':'selecionados'} de 100`;
+ const locked=form.dataset.submitting==='true';
+ form.querySelector('[data-action="clear-recipients"]').disabled=!count||locked;
+ form.querySelector('[type="submit"]').disabled=!count||locked;
+}
+
+async function loadContactPage(manualMode){
+ const form=manualMode?document.getElementById('manual-form'):null;
+ const input=document.getElementById(manualMode?'customer-search':'customer-filter');
+ if(!input||!state.current) return;
+ const view=manualMode?state.manual:browse;
+ const target=document.getElementById(manualMode?'manual-customers':'customer-results');
+ const pager=document.getElementById(manualMode?'manual-pager':'customer-pager');
+ const request=++view.request;
+ const tenant=state.current.id;
+ const service=form?.elements.service_id.value;
+ const page=view.page;
+ const search=input.value.trim().replace(/[^\p{L}\p{N}+ -]/gu,' ').trim().slice(0,100);
+ target.setAttribute('aria-busy','true');
+ target.innerHTML='<p class="hint" role="status">Buscando clientes…</p>';
+ pager.innerHTML='';
+ try{
+  const columns='id,name,phone,birthday,marketing_opt_in,opted_out_at';
+  const rows=await queryData('customers',query=>{
+   if(manualMode) query=query.eq('marketing_opt_in',true).is('opted_out_at',null).not('phone','is',null).neq('phone','');
+   if(service) query=query.eq('appointments.establishment_id',tenant).eq('appointments.service_id',service).or('completed_at.not.is.null,status.eq.completed',{referencedTable:'appointments'});
+   if(search) query=query.or(`name.ilike.%${search}%,phone.ilike.%${search}%`);
+   return query.order('name').order('id').range(page*contactPageSize,(page+1)*contactPageSize);
+  },service?`${columns},appointments!inner(id)`:columns,tenant);
+  if(request!==view.request||!target.isConnected) return;
+  const visible=rows.slice(0,contactPageSize);
+  if(manualMode){
+   target.innerHTML=visible.length?visible.map(c=>`<label class="recipient-row"><input type="checkbox" name="customer_ids" value="${h(c.id)}" ${view.selected.has(c.id)?'checked':''}><span><strong>${h(c.name||'Cliente sem nome')}</strong><small>${h(c.phone||'Sem telefone informado')}</small></span></label>`).join('')
+    : '<p class="hint">Nenhum cliente elegível para esses filtros.</p>';
+  } else {
+   target.innerHTML=customerTable(visible);
+  }
+  const controls=`data-mode="${manualMode?'manual':'browse'}"`;
+  pager.innerHTML=`${button('Anterior','contact-page',`${controls} data-step="-1" ${page?'':'disabled'}`,'small')}<span class="hint">Página ${page+1}</span>${button('Próxima','contact-page',`${controls} data-step="1" ${rows.length>contactPageSize?'':'disabled'}`,'small')}`;
+ }catch{
+  if(request===view.request&&target.isConnected) target.innerHTML=`<p class="hint">Não foi possível buscar os clientes.</p>${button('Tentar novamente','contact-page',`data-mode="${manualMode?'manual':'browse'}" data-step="0"`,'small')}`;
+ }finally{
+  if(request===view.request) target.setAttribute('aria-busy','false');
+ }
+}
+
 function customerTable(list){return list.length?table(['Cliente','Telefone','Aniversário','Consentimento','Ação'],list.map(c=>[h(c.name),h(c.phone||'—'),h(c.birthday?dateOnly(c.birthday+'T12:00:00'):'—'),`<span class="badge ${c.marketing_opt_in&&!c.opted_out_at?'green':'amber'}">${c.marketing_opt_in&&!c.opted_out_at?'Autorizado':'Não autorizado'}</span>`,button('Histórico','customer-detail',`data-id="${h(c.id)}"`,'small')])):empty('Nenhum cliente encontrado','Sincronize os clientes via n8n.')}
-function reportsPage(){return `${head('Relatórios de envios','Acompanhe mensagens, falhas e execução das rotinas.',button('↻ Atualizar','refresh','','small'))}<div class="metrics"><div class="card"><span class="muted small">Na fila</span><div class="metric">${state.jobs.filter(j=>j.status==='queued').length}</div></div><div class="card"><span class="muted small">Enviadas</span><div class="metric">${state.jobs.filter(j=>['sent','delivered','read'].includes(j.status)).length}</div></div><div class="card"><span class="muted small">Falhas</span><div class="metric">${state.jobs.filter(j=>j.status==='failed').length}</div></div><div class="card"><span class="muted small">Ignoradas</span><div class="metric">${state.jobs.filter(j=>j.status==='skipped').length}</div></div></div><section class="card"><div class="card-heading"><h2>Últimas mensagens</h2><span class="muted small">Até 500 registros</span></div>${state.jobs.length?table(['Data','Cliente','Origem','Status','Detalhe'],state.jobs.map(j=>[h(fmt(j.created_at)),h(state.customers.find(c=>c.id===j.customer_id)?.name||'—'),h(j.source),`<span class="badge ${['sent','delivered','read'].includes(j.status)?'green':j.status==='failed'?'red':'amber'}">${h(j.status)}</span>`,h(j.error_message||'—')])):empty('Sem envios registrados','Os registros aparecerão após a primeira execução.')}</section><div class="section-title"><h2>Logs de integração</h2></div><section class="card">${state.logs.length?table(['Data','Fonte','Evento','Status'],state.logs.map(l=>[h(fmt(l.created_at)),h(l.source),h(l.event),h(l.status)])):empty('Sem logs','O n8n poderá registrar suas sincronizações aqui.')}</section>`}
-function catalogPage(){return `${head('Catálogos e serviços','Canais, templates e serviços são atualizados pelos fluxos do n8n.',button('↻ Recarregar dados','refresh','','small'))}<div class="grid2"><section class="card"><div class="card-heading"><h2>Canais (${state.channels.length})</h2></div>${state.channels.length?table(['Nome','Tipo','ID externo'],state.channels.map(c=>[h(c.name),`<span class="badge">${h(c.type)}</span>`,h(c.external_id)])):empty('Sem canais','Configure a sincronização Clickmassa.')}</section><section class="card"><div class="card-heading"><h2>Templates (${state.templates.length})</h2></div>${state.templates.length?table(['Nome','Status','Variáveis'],state.templates.map(t=>[h(t.name),h(t.status),h(Array.isArray(t.variables)?t.variables.length:0)])):empty('Sem templates','Configure a sincronização Clickmassa.')}</section></div><div class="section-title"><h2>Serviços do AVEC</h2></div><section class="card">${state.services.length?table(['Serviço','ID AVEC','Retorno médio','Ação'],state.services.map(s=>[h(s.name),h(s.external_id),h(s.default_return_days??'Não definido')+' dias',button('Definir retorno','service-return',`data-id="${h(s.id)}"`,'small')])):empty('Sem serviços','Sincronize a lista de serviços através do n8n.')}</section>`}
+function reportsPage(){return `${head('Relatórios de envios','Acompanhe mensagens, falhas e execução das rotinas.',button('↻ Atualizar','refresh','','small'))}<div class="metrics"><div class="card"><span class="muted small">Na fila</span><div class="metric">${state.jobs.filter(j=>j.status==='queued').length}</div></div><div class="card"><span class="muted small">Enviadas</span><div class="metric">${state.jobs.filter(j=>['sent','delivered','read'].includes(j.status)).length}</div></div><div class="card"><span class="muted small">Falhas</span><div class="metric">${state.jobs.filter(j=>j.status==='failed').length}</div></div><div class="card"><span class="muted small">Ignoradas</span><div class="metric">${state.jobs.filter(j=>j.status==='skipped').length}</div></div></div><section class="card"><div class="card-heading"><h2>Últimas mensagens</h2><span class="muted small">Até 500 registros</span></div>${state.jobs.length?table(['Data','Cliente','Origem','Status','Detalhe'],state.jobs.map(j=>[h(fmt(j.created_at)),h(state.customers.find(c=>c.id===j.customer_id)?.name||'—'),h(j.source),`<span class="badge ${['sent','delivered','read'].includes(j.status)?'green':j.status==='failed'?'red':'amber'}">${h(statusLabel(j.status))}</span>`,h(j.error_message||'—')])):empty('Sem envios registrados','Os registros aparecerão após a primeira execução.')}</section><div class="section-title"><h2>Logs de integração</h2></div><section class="card">${state.logs.length?table(['Data','Fonte','Evento','Status'],state.logs.map(l=>[h(fmt(l.created_at)),h(l.source),h(l.event),h(l.status)])):empty('Sem logs','O n8n poderá registrar suas sincronizações aqui.')}</section>`}
+function catalogPage(){return `${head('Catálogos e serviços','Canais, templates e serviços são atualizados pelos fluxos do n8n.',button('↻ Recarregar dados','refresh','','small'))}<div class="grid2"><section class="card"><div class="card-heading"><h2>Canais (${state.channels.length})</h2></div>${state.channels.length?table(['Nome','Tipo','ID externo'],state.channels.map(c=>[h(c.name),`<span class="badge">${h(c.type)}</span>`,h(c.external_id)])):empty('Sem canais','Configure a sincronização Clickmassa.')}</section><section class="card"><div class="card-heading"><h2>Templates (${state.templates.length})</h2></div>${state.templates.length?table(['Nome','Status','Variáveis'],state.templates.map(t=>[h(t.name),h(t.status),h(Array.isArray(t.variables)?t.variables.length:0)])):empty('Sem templates','Configure a sincronização Clickmassa.')}</section></div><div class="section-title"><h2>Serviços do AVEC</h2></div><section class="card">${state.services.length?table(['Serviço','ID AVEC','Retorno médio','Ação'],state.services.map(s=>[h(s.name),h(s.external_id),h(s.default_return_days??'Não definido')+' dias',canManage()?button('Definir retorno','service-return',`data-id="${h(s.id)}"`,'small'):'—'])):empty('Sem serviços','Sincronize a lista de serviços através do n8n.')}</section>`}
 function avecPage(){
+ if(state.avecStatus!=='ready') return `${head('Relatórios AVEC','Pesquise relatórios por código ou assunto.')}${state.avecStatus==='error'?`<div class="alert">O catálogo está indisponível. ${button('Tentar novamente','retry-avec','','small')}</div>`:'<p class="card" role="status">Carregando catálogo…</p>'}`;
  const reports=state.avecCatalog;
  const mappings={csat:['0031','0008','0004'],inactive:['0107','0004'],post_service:['0031','0038','0248'],return:['0020','0320'],birthday:['0001','0004'],cross_sell:['0005','0008','0033'],history:['0002','0008','0031','0248'],stock:['0046'],arrival:['0248']};
  const moduleNames={...Object.fromEntries(MODULES.map(m=>[m.type,m.title])),history:'Histórico do cliente'};
  const report=reports.find(x=>x.code===state.avecReportCode)||reports[0];
- const filtered=reports.filter(x=>[x.code,x.name,x.description].join(' ').toLocaleLowerCase('pt-BR').includes(state.avecSearch.toLocaleLowerCase('pt-BR'))).slice(0,70);
+ const filtered=reports.filter(x=>normalizeSearch([x.code,x.name,x.description].join(' ')).includes(normalizeSearch(state.avecSearch)));
  return `${head('Relatórios AVEC','Catálogo extraído da documentação oficial recebida. As consultas e envios reais ocorrem no servidor/n8n.')}
  <div class="alert info">Consulta segura: o navegador não possui o token AVEC. Para usar um relatório, implemente o fluxo n8n com autenticação do usuário, validação do estabelecimento e paginação. Nenhuma consulta é disparada por esta tela.</div>
  <section class="card" style="margin-top:16px"><h2 style="margin-bottom:14px">Mapeamento por automação</h2><div class="avec-map">${Object.entries(mappings).map(([type,codes])=>`<div class="avec-map-row"><strong>${h(moduleNames[type])}</strong><div>${codes.map(code=>`<button class="btn small" data-action="avec-select" data-code="${h(code)}">${h(code)}</button>`).join(' ')}</div></div>`).join('')}</div><p class="hint">Aviso de chegada: 0248 indica status de agendamento, mas não confirma check-in. Não ativar envios automáticos por chegada sem validar o contrato da AVEC.</p></section>
- <div class="grid2" style="margin-top:18px"><section class="card"><h2 style="margin-bottom:14px">Catálogo de relatórios (${reports.length})</h2><div class="field"><label for="avec-search">Pesquisar por código ou assunto</label><input class="input" id="avec-search" value="${h(state.avecSearch)}" placeholder="Ex.: 0107, aniversário, estoque"></div><div class="avec-report-list">${filtered.map(r=>`<button class="avec-report-button ${report?.code===r.code?'selected':''}" data-action="avec-select" data-code="${h(r.code)}"><span class="code">${h(r.code)}</span><span>${h(r.name)}</span></button>`).join('')||'<p class="muted small">Nenhum relatório encontrado.</p>'}</div><p class="hint">Mostrando até 70 itens por busca.</p></section>
- <section class="card"><h2>Detalhes do relatório</h2>${report?`<p class="muted" style="margin:12px 0"><strong class="code">${h(report.code)}</strong> ${h(report.name)}</p><p class="muted small">${h(report.description||'Descrição indisponível')}</p><p class="muted small" style="margin-top:12px">Método: <strong>${h(report.method)}</strong> • Caminho: <span class="code">${h(report.path)}</span></p><div class="section-title"><h3>Parâmetros documentados</h3></div>${report.params.length?table(['Parâmetro','Tipo','Exemplo na coleção'],report.params.map(p=>[h(p.name),h(p.type),h(p.sample||'—')])):'<p class="muted small">Sem parâmetros extras documentados.</p>'}<p class="hint">Expressões como date('m/Y') são exemplos da coleção. O n8n deve enviar datas calculadas no formato DD/MM/AAAA.</p>${button('Copiar especificação para n8n','avec-copy',`data-code="${h(report.code)}"`,'small')}`:'<p class="muted">Catálogo ainda não carregado.</p>'}</section></div>`;
+ <div class="grid2" style="margin-top:18px"><section class="card"><h2 style="margin-bottom:14px">Catálogo de relatórios (${reports.length})</h2><div class="field"><label for="avec-search">Pesquisar por código ou assunto</label><input class="input" id="avec-search" value="${h(state.avecSearch)}" placeholder="Ex.: 0107, aniversário, estoque"></div><div class="avec-report-list">${reportButtons(filtered,report?.code)}</div><p class="hint" id="avec-count" role="status">${filtered.length} relatórios encontrados</p></section>
+ <section class="card"><h2>Detalhes do relatório</h2>${report?`<p class="muted" style="margin:12px 0"><strong class="code">${h(report.code)}</strong> ${h(report.name)}</p><p class="muted small">${h(report.description||'Descrição indisponível')}</p><p class="muted small" style="margin-top:12px">Método: <strong>${h(report.method)}</strong> • Caminho: <span class="code">${h(report.path)}</span></p><div class="section-title"><h3>Parâmetros documentados</h3></div>${report.params.length?table(['Parâmetro','Tipo','Exemplo na coleção'],report.params.map(p=>[h(p.name),h(p.type),h(p.sample||'—')])):'<p class="muted small">Sem parâmetros extras documentados.</p>'}<p class="hint">Expressões como date('m/Y') são exemplos da coleção. O n8n deve enviar datas calculadas no formato DD/MM/AAAA.</p>${state.profile?.master_admin?button('Copiar especificação para n8n','avec-copy',`data-code="${h(report.code)}"`,'small'):''}`:'<p class="muted">Catálogo ainda não carregado.</p>'}</section></div>`;
 }
+function reportButtons(reports,selected){
+ return reports.map(r=>`<button class="avec-report-button ${selected===r.code?'selected':''}" aria-pressed="${selected===r.code}" data-action="avec-select" data-code="${h(r.code)}"><span class="code">${h(r.code)}</span><span>${h(r.name)}</span></button>`).join('')||'<p class="muted small">Nenhum relatório encontrado.</p>';
+}
+function filterAvec(search){
+ state.avecSearch=search;
+ const term=normalizeSearch(search);
+ const reports=state.avecCatalog.filter(r=>normalizeSearch([r.code,r.name,r.description].join(' ')).includes(term));
+ document.querySelector('.avec-report-list').innerHTML=reportButtons(reports,state.avecReportCode);
+ document.getElementById('avec-count').textContent=`${reports.length} relatórios encontrados`;
+}
+
 function ticketPage(){const t=state.ticket;return `${head('Atendimento aberto','Contexto recebido via window.postMessage, quando disponibilizado pelo CRM.')}${!t?'<div class="alert info">Aguardando contexto do atendimento. Abra o plugin no ticket do CRM e configure a origem autorizada no config.js.</div>':`<div class="grid2"><div class="card"><div class="card-heading"><h2>Contexto do ticket</h2><span class="badge ${state.ticketVerified?'green':'amber'}">${state.ticketVerified?'Origem autorizada':'Não verificado'}</span></div><div class="ticket-info"><div><span>ID do ticket</span><strong>${h(t.ticketId||'—')}</strong></div><div><span>ID do contato</span><strong>${h(t.contactId||'—')}</strong></div><div><span>Telefone</span><strong>${h(t.phone||'—')}</strong></div><div><span>Origem informada</span><strong>${h(t.origin||'—')}</strong></div></div><p class="hint" style="margin-top:14px">Dados de postMessage são contexto visual, não prova de identidade do cliente. Valide qualquer operação sensível pelo servidor.</p></div><section class="card"><h2>Histórico vinculado</h2>${ticketCustomerHistory(t)}</section></div>`}`}
-function ticketCustomerHistory(t){const digits=String(t.phone||'').replace(/\D/g,'');if(digits.length<10)return empty('Sem correspondência','O CRM precisa enviar um telefone válido, ou será necessário um endpoint de vínculo pelo ticket ID.');const found=state.customers.find(c=>String(c.phone||'').replace(/\D/g,'').endsWith(digits.slice(-10)));return found?`<p style="margin:12px 0"><strong>${h(found.name)}</strong></p>${button('Visualizar histórico','customer-detail',`data-id="${h(found.id)}"`,'small')}`:empty('Cliente não encontrado','Confira a sincronização e a normalização dos telefones.')}
+function ticketCustomerHistory(t){const digits=String(t.phone||'').replace(/\D/g,'');if(digits.length<10)return empty('Sem correspondência','O CRM precisa enviar um telefone válido, ou será necessário um endpoint de vínculo pelo ticket ID.');const found=state.customers.filter(c=>String(c.phone||'').replace(/\D/g,'').replace(/^55(?=\d{10,11}$)/,'')===digits.replace(/^55(?=\d{10,11}$)/,''));return found.length===1?`<p style="margin:12px 0"><strong>${h(found[0].name)}</strong></p>${button('Visualizar histórico','customer-detail',`data-id="${h(found[0].id)}"`,'small')}`:empty('Cliente não encontrado','Confira a sincronização e a normalização dos telefones.')}
 function settingsPage(){return `${head('Configurações','Personalização do ambiente e status das integrações.') }<div class="grid2"><section class="card"><h2 style="margin-bottom:17px">Estabelecimento</h2><div class="list-row"><span class="muted">Nome</span><strong>${h(state.current.name)}</strong></div><div class="list-row"><span class="muted">Identificador</span><span class="code">${h(state.current.id)}</span></div><div class="list-row"><span class="muted">Fuso horário</span><strong>${h(state.current.timezone)}</strong></div><div class="field" style="margin-top:20px"><label>Link deste estabelecimento</label><div class="input-row"><input class="input" readonly value="${h(tenantUrl(state.current.slug))}">${button('Copiar','copy-link','','small')}</div></div></section><section class="card"><h2 style="margin-bottom:17px">Integrações</h2><div class="list-row"><span>AVEC</span><span class="badge ${state.status?.avec_configured?'green':'amber'}">${state.status?.avec_configured?'Configurado':'Pendente'}</span></div><div class="list-row"><span>Clickmassa</span><span class="badge ${state.status?.clickmassa_configured?'green':'amber'}">${state.status?.clickmassa_configured?'Configurado':'Pendente'}</span></div><div class="list-row"><span>Última sync AVEC</span><span class="small">${h(fmt(state.status?.last_avec_sync))}</span></div><div class="list-row"><span>Última sync CRM</span><span class="small">${h(fmt(state.status?.last_clickmassa_sync))}</span></div><div class="alert info" style="margin-top:20px">Tokens e URL do CRM são mantidos em tabela privada. O n8n atualiza o token a cada 6 horas via service_role e usa apenas o ID do estabelecimento nos seus fluxos.</div></section></div>`}
 function adminPage(){if(!state.profile?.master_admin)return empty('Acesso restrito','Somente administradores master podem acessar esta área.');return `${head('Painel master','Gerencie estabelecimentos, credenciais e acessos.',button('＋ Novo estabelecimento','add-establishment'))}<div class="metrics"><div class="card"><span class="muted small">Estabelecimentos</span><div class="metric">${state.establishments.length}</div></div><div class="card"><span class="muted small">Ativos</span><div class="metric">${state.establishments.filter(x=>x.active).length}</div></div><div class="card"><span class="muted small">Desativados</span><div class="metric">${state.establishments.filter(x=>!x.active).length}</div></div><div class="card"><span class="muted small">Workspace atual</span><div class="metric" style="font-size:1.12rem">${h(state.current?.name||'—')}</div></div></div><section class="card"><div class="card-heading"><h2>Estabelecimentos cadastrados</h2></div>${state.establishments.length?table(['Estabelecimento','Link','Status','Ações'],state.establishments.map(e=>[h(e.name),`<div class="copy-link"><a href="${h(tenantUrl(e.slug))}" target="_blank" rel="noopener">${h(tenantUrl(e.slug))}</a></div>`,`<span class="badge ${e.active?'green':'red'}">${e.active?'Ativo':'Inativo'}</span>`,`${button('Credenciais','credentials',`data-id="${h(e.id)}"`,'small')} ${button('Acesso','grant-access',`data-id="${h(e.id)}"`,'small')} ${button(e.active?'Desativar':'Ativar','toggle-establishment',`data-id="${h(e.id)}"`,'small')}`])):empty('Nenhum estabelecimento','Crie o primeiro workspace.')}</section>`}
 const tenantUrl=(slug)=>`${String(conf.publicBaseUrl||location.origin).replace(/\/$/,'')}/?estabelecimento=${encodeURIComponent(slug)}${embedded?'&embed=1':''}`;
@@ -102,43 +386,349 @@ function modalHtml(){const m=state.modal;let content='';if(m.type==='add-establi
  if(m.type==='automation')content=automationForm();
  if(m.type==='customer-detail')content=customerDetail(m.id);
  if(m.type==='service-return'){const s=state.services.find(x=>x.id===m.id);content=`<form id="service-return-form" class="stack"><p class="muted small">${h(s?.name)}</p>${field('Dias médios para retorno','default_return_days','number','30',s?.default_return_days||30,'min="1" max="3650" required')}<div class="alert info">A regra de retorno de cada serviço poderá usar este intervalo.</div><div class="modal-footer">${button('Cancelar','close-modal','','')}<button class="btn primary" type="submit">Salvar</button></div></form>`}
- const titles={'add-establishment':['Novo estabelecimento','Crie uma URL e um ambiente isolado.'],credentials:['Credenciais seguras','AVEC e Clickmassa'], 'grant-access':['Acesso ao estabelecimento','Vincule um usuário confirmado.'],automation:[state.editing?'Editar automação':'Criar automação','Canal, template e regras independentes'], 'customer-detail':['Histórico do cliente','Dados sincronizados do AVEC'], 'service-return':['Retorno por serviço','Intervalo médio recomendado']};let [title,desc]=titles[m.type]||['Editar',''];return `<div class="modal-bg" id="modal-bg"><div class="modal ${m.type==='automation'?'wide':''}" role="dialog" aria-modal="true" aria-label="${h(title)}"><div class="modal-head"><div><h2>${h(title)}</h2><p>${h(desc)}</p></div>${button('✕','close-modal','','ghost small')}</div>${content}</div></div>`}
-function customerDetail(id){const c=state.customers.find(x=>x.id===id);if(!c)return empty('Cliente não encontrado','');const ap=state.appointments.filter(a=>a.customer_id===c.id);const jobs=state.jobs.filter(j=>j.customer_id===c.id);return `<div class="ticket-info"><div><span>Nome</span><strong>${h(c.name)}</strong></div><div><span>Telefone</span><strong>${h(c.phone||'—')}</strong></div><div><span>Data de nascimento</span><strong>${h(c.birthday||'—')}</strong></div><div><span>Consentimento</span><strong>${c.marketing_opt_in&&!c.opted_out_at?'Sim':'Não'}</strong></div></div><h3 style="margin:24px 0 12px">Agendamentos (${ap.length})</h3>${ap.length?table(['Data','Serviço','Status','Valor'],ap.slice(0,30).map(a=>[h(fmt(a.scheduled_at)),h(state.services.find(s=>s.id===a.service_id)?.name||'—'),h(a.status),h(a.amount??'—')])):empty('Sem agendamentos','Ainda não sincronizados.')}<h3 style="margin:24px 0 12px">Mensagens (${jobs.length})</h3>${jobs.length?table(['Data','Status','Origem'],jobs.slice(0,20).map(j=>[h(fmt(j.created_at)),h(j.status),h(j.source)])):empty('Sem mensagens','Nenhum envio registrado.')}`}
-function automationForm(){const a=state.editing||{};const r=a.rules||{};const m=mod(a.type||state.modal.moduleType||'csat');const allTypes=MODULES.map(x=>opt(x.type,x.title));const ch=state.channels.filter(x=>['waba','whatsapp'].includes(x.type)&&x.active);const serv=state.services;const selected=r.service_ids||[];const cross=r.cross_sell_target_service_id||'';
- return `<form id="automation-form"><div class="automation-steps"><span class="step active">1. Gatilho e regras</span><span class="step active">2. Canal e template</span><span class="step active">3. Variáveis e envio</span></div><div class="form-grid">${field('Nome da configuração','name','text','Ex: CSAT 2 dias',a.name||'','required')}${select('Tipo de automação','type',allTypes,a.type||state.modal.moduleType||'csat',state.editing?'disabled':'')}${field('Intervalo em dias','delay_days','number','0',a.delay_days??0,'min="0" max="3650" required')}${field('Horário de envio (fuso do estabelecimento)','send_time','time','09:00',String(a.send_time||'09:00').slice(0,5),'required')}${select('Canal de envio','channel_id',[opt('','Selecione o canal'),...ch.map(c=>opt(c.id,`${c.name} (${c.type})`))],a.channel_id||'','required')}${select('Template','template_id',[opt('','Selecione o template'),...state.templates.filter(t=>t.status==='active').map(t=>opt(t.id,t.name))],a.template_id||'','required')}<div class="field full"><label>Serviços elegíveis (Ctrl/Cmd para múltiplos; vazio = todos)</label><select class="select" name="service_ids" multiple>${serv.map(s=>`<option value="${h(s.id)}" ${selected.includes(s.id)?'selected':''}>${h(s.name)}</option>`).join('')}</select></div>${select('Serviço complementar (cross-sell)','cross_sell_target_service_id',[opt('','Não definir'),...serv.map(s=>opt(s.id,s.name))],cross)}${field('Número destinatário de alerta (estoque/chegada)','recipient_phone','tel','+5584999999999',r.recipient_phone||'')}${field('Limite mínimo de estoque (se aplicável)','min_stock','number','0',r.min_stock??0,'min="0"')}${field('Intervalo mínimo entre mensagens (dias)','cooldown_days','number','7',r.cooldown_days??7,'min="0"')}${select('Origem do intervalo (inatividade/retorno)','date_basis',[opt('last_completed','Último atendimento concluído'),opt('last_appointment','Último agendamento'),opt('next_appointment','Próximo agendamento')],r.date_basis||'last_completed')}<div class="full alert info">CSAT: dias após conclusão. Inativos: dias sem agendamento. Pós-atendimento: dias após conclusão (0 = imediatamente após processamento). Retorno: intervalo por serviço (no cadastro de serviços), podendo usar dias deste formulário como fallback. Aniversário: dias antes/depois conforme sua regra n8n. Estoque/chegada: dependem dos eventos da API AVEC.</div><div class="field full"><label>Mapeamento de variáveis do template (JSON)</label><textarea id="variable_mapping" name="variable_mapping" class="textarea" rows="5" spellcheck="false" placeholder='{"1":"customer.name","2":"service.name"}'>${h(JSON.stringify(a.variable_mapping||{},null,2))}</textarea><div class="hint">Exemplo: {"1":"customer.name","2":"appointment.scheduled_at"}. As chaves reais dependem das variáveis de cada template e dos dados mapeados na API.</div></div><div class="full"><label class="check-row"><input type="checkbox" name="enabled" ${a.enabled?'checked':''}> Ativar automação após salvar</label></div></div><div class="modal-footer">${button('Cancelar','close-modal','','')}<button class="btn primary" type="submit">Salvar automação</button></div></form>`}
-function openModal(type,id='',moduleType=''){state.modal={type,id,moduleType};state.editing=type==='automation'&&id?state.modules.find(x=>x.id===id):null;render()}
-async function submitAuth(form){const v=Object.fromEntries(new FormData(form));if(state.authMode==='signup'){if((v.password||'').length<8)throw new Error('A senha deve ter no mínimo 8 caracteres.');const {error}=await db().auth.signUp({email:v.email,password:v.password,options:{data:{full_name:v.name},emailRedirectTo:location.origin+location.pathname+location.search}});if(error)throw error;toast('Confira seu e-mail para confirmar o cadastro.');state.authMode='login';renderAuth();return}
+ const titles={'add-establishment':['Novo estabelecimento','Crie uma URL e um ambiente isolado.'],credentials:['Credenciais seguras','AVEC e Clickmassa'], 'grant-access':['Acesso ao estabelecimento','Vincule um usuário confirmado.'],automation:[state.editing?'Editar automação':'Criar automação','Canal, template e regras independentes'], 'customer-detail':['Histórico do cliente','Dados sincronizados do AVEC'], 'service-return':['Retorno por serviço','Intervalo médio recomendado']};let [title,desc]=titles[m.type]||['Editar',''];return `<div class="modal-bg" id="modal-bg"><div class="modal ${m.type==='automation'?'wide':''}" role="dialog" aria-modal="true" aria-label="${h(title)}"><div class="modal-head"><div><h2>${h(title)}</h2><p>${h(desc)}</p></div>${button('✕','close-modal','aria-label="Fechar janela"','ghost small')}</div><div class="modal-body">${content}</div></div>`}
+function customerDetail(id){
+ const {detail,loading}=state.modal;
+ if(loading) return '<p class="hint" role="status">Carregando histórico…</p>';
+ if(!detail) return `<p class="alert">Não foi possível abrir o histórico.</p>${button('Tentar novamente','customer-detail',`data-id="${h(id)}"`,'small')}`;
+ const {customer:c,appointments,jobs}=detail;
+ return `<dl class="ticket-info"><div><dt>Nome</dt><dd>${h(c.name)}</dd></div><div><dt>Telefone</dt><dd>${h(c.phone||'—')}</dd></div><div><dt>Aniversário</dt><dd>${h(c.birthday?dateOnly(c.birthday+'T12:00:00'):'—')}</dd></div><div><dt>Consentimento</dt><dd>${c.marketing_opt_in&&!c.opted_out_at?'Autorizado':'Não autorizado'}</dd></div></dl>
+ <div class="section-title"><h3>Últimos agendamentos</h3></div>${appointments.length?table(['Data','Serviço','Status','Valor'],appointments.map(a=>[h(fmt(a.scheduled_at)),h(a.services?.name||'—'),h(statusLabel(a.status)),a.amount==null?'—':h(Number(a.amount).toLocaleString('pt-BR',{style:'currency',currency:'BRL'}))])):empty('Sem agendamentos','')}
+ <div class="section-title"><h3>Últimas mensagens</h3></div>${jobs.length?table(['Data','Status','Origem'],jobs.map(j=>[h(fmt(j.created_at)),h(statusLabel(j.status)),j.source==='manual'?'Manual':'Automação'])):empty('Sem mensagens','')}`;
+}
+
+async function openCustomerDetail(id){
+ const tenant=state.current?.id;
+ if(!tenant) return;
+ const modal={type:'customer-detail',id,loading:true};
+ state.modal=modal;
+ showModal();
+ try{
+  const [customers,appointments,jobs]=await Promise.all([
+   queryData('customers',q=>q.eq('id',id).limit(1),'id,name,phone,birthday,marketing_opt_in,opted_out_at',tenant),
+   queryData('appointments',q=>q.eq('customer_id',id).order('scheduled_at',{ascending:false}).limit(30),'scheduled_at,status,amount,services(name)',tenant),
+   queryData('message_jobs',q=>q.eq('customer_id',id).order('created_at',{ascending:false}).limit(20),'created_at,status,source',tenant)
+  ]);
+  if(customers[0]) modal.detail={customer:customers[0],appointments,jobs};
+ }catch(err){if(state.modal===modal)apiError(err)}
+ finally{
+  modal.loading=false;
+  if(state.modal===modal) document.querySelector('.modal-body').innerHTML=customerDetail(id);
+ }
+}
+
+const triggerHelp={
+ csat:'O intervalo começa quando o atendimento é concluído.',
+ inactive:'Defina quantos dias sem agendamento caracterizam inatividade.',
+ post_service:'Zero dias coloca a mensagem na fila após a conclusão do atendimento.',
+ return:'O intervalo do serviço tem prioridade. Use este campo como alternativa.',
+ birthday:'Use zero para a data do aniversário.',
+ cross_sell:'Escolha o serviço recomendado após um atendimento elegível.',
+ stock:'Avisa o responsável quando o estoque atinge o limite escolhido.',
+ arrival:'Avisa o responsável quando o AVEC registra uma chegada confirmada.'
+};
+
+function automationForm(){
+ const a=state.editing||{}, rules=a.rules||{};
+ const type=a.type||state.modal.moduleType||'csat';
+ const channels=activeChannels().map(c=>opt(c.id,c.name));
+ const templates=activeTemplates().map(t=>opt(t.id,t.name));
+ if(a.channel_id&&!channels.some(x=>x.value===a.channel_id)) channels.push(opt(a.channel_id,'Canal atual (indisponível)'));
+ if(a.template_id&&!templates.some(x=>x.value===a.template_id)) templates.push(opt(a.template_id,'Modelo atual (indisponível)'));
+ const selected=new Set(Array.isArray(rules.service_ids)?rules.service_ids:[]);
+ const services=state.services.map(s=>opt(s.id,s.name));
+ for(const id of selected) if(!services.some(x=>x.value===id)) services.push(opt(id,'Serviço sincronizado anteriormente'));
+ if(rules.cross_sell_target_service_id&&!services.some(x=>x.value===rules.cross_sell_target_service_id)) services.push(opt(rules.cross_sell_target_service_id,'Serviço sincronizado anteriormente'));
+ return `<form id="automation-form" class="stack">
+ <div class="form-grid">
+ ${field('Nome da regra','name','text','Ex. Pesquisa após atendimento',a.name,'required maxlength="120"')}
+ ${select('Tipo de automação','type',MODULES.map(x=>opt(x.type,x.title)),type,state.editing?'disabled':'required')}
+ <p class="hint full" data-trigger-help></p>
+ ${field('Intervalo em dias','delay_days','number','0',a.delay_days??0,'min="0" max="3650" required')}
+ ${field('Horário no estabelecimento','send_time','time','',String(a.send_time||'09:00').slice(0,5),'required')}
+ <div data-for-types="stock arrival">${field('Telefone do responsável com DDI','recipient_phone','tel','+5511999990000',rules.recipient_phone,'maxlength="30"')}</div>
+ <div data-for-types="stock">${field('Limite de estoque','min_stock','number','0',rules.min_stock??0,'min="0" max="999999999"')}</div>
+ <div data-for-types="cross_sell">${select('Serviço recomendado','cross_sell_target_service_id',[opt('','Selecione um serviço'),...services],rules.cross_sell_target_service_id)}</div>
+ <div data-for-types="inactive return">${select('Contar a partir de','date_basis',[opt('last_completed','Último atendimento concluído'),opt('last_appointment','Último agendamento'),opt('next_appointment','Próximo agendamento')],rules.date_basis||'last_completed')}</div>
+ ${field('Intervalo mínimo entre mensagens (dias)','cooldown_days','number','7',rules.cooldown_days??7,'min="0" max="3650" required')}
+ </div>
+ <details class="service-picker" ${selected.size?'open':''} data-for-types="csat inactive post_service return cross_sell arrival">
+ <summary>Serviços elegíveis <span class="hint">Todos quando a seleção estiver vazia</span></summary>
+ <div class="recipient-list">${services.map(x=>`<label class="recipient-row"><input type="checkbox" name="service_ids" value="${h(x.value)}" ${selected.has(x.value)?'checked':''}>${h(x.label)}</label>`).join('')||'<p class="hint">Nenhum serviço sincronizado.</p>'}</div>
+ </details>
+ <div class="form-grid">
+ ${select('Canal de WhatsApp','channel_id',[opt('','Selecione um canal'),...channels],a.channel_id,'required')}
+ ${select('Modelo de mensagem','template_id',[opt('','Selecione um modelo'),...templates],a.template_id,'required')}
+ </div><div class="stack" data-variables></div>
+ <label class="check-row"><input type="checkbox" name="enabled" ${a.enabled?'checked':''}> Ativar regra após salvar</label>
+ <div class="modal-footer">${button('Cancelar','close-modal','','ghost')}<button class="btn primary" type="submit">Salvar automação</button></div></form>`;
+}
+
+function updateAutomationFields(form){
+ const type=form.elements.type.value;
+ form.querySelector('[data-trigger-help]').textContent=triggerHelp[type]||'';
+ for(const group of form.querySelectorAll('[data-for-types]')){
+  group.hidden=!group.dataset.forTypes.split(' ').includes(type);
+  for(const field of group.querySelectorAll('input,select')){
+   field.disabled=group.hidden;
+   if(['recipient_phone','min_stock','cross_sell_target_service_id'].includes(field.name)) field.required=!group.hidden;
+  }
+ }
+}
+
+let modalOpener;
+function showModal(){
+ document.getElementById('modal-bg')?.remove();
+ modalOpener=document.activeElement;
+ el.insertAdjacentHTML('beforeend',modalHtml());
+ el.querySelector('.layout').inert=true;
+ const dialog=el.querySelector('.modal');
+ const form=dialog.querySelector('#automation-form');
+ if(form){
+  updateAutomationFields(form);
+  variablePanel(form,state.editing?.variable_mapping||{});
+ }
+ (dialog.querySelector('form input:not([disabled])')||dialog.querySelector('[data-action="close-modal"]')).focus();
+}
+function closeModal(){
+ const form=el.querySelector('.modal form[data-submitting="true"]');
+ if(form) return;
+ state.modal=null;
+ state.editing=null;
+ el.querySelector('#modal-bg')?.remove();
+ el.querySelector('.layout').inert=false;
+ modalOpener?.focus();
+}
+function openModal(type,id='',moduleType=''){
+ state.modal={type,id,moduleType};
+ state.editing=type==='automation'&&id?state.modules.find(x=>x.id===id):null;
+ showModal();
+}
+async function submitAuth(form){const v=Object.fromEntries(new FormData(form));if(state.authMode==='new-password'){
+ if(v.password!==v.confirm_password) throw Error('As senhas precisam ser iguais.');
+ const {error}=await db().auth.updateUser({password:v.password});if(error)throw error;
+ state.authMode='login';await loadAuth(state.session);toast('Senha atualizada.');return;
+ }if(state.authMode==='signup'){if((v.password||'').length<8)throw new Error('A senha deve ter no mínimo 8 caracteres.');const {error}=await db().auth.signUp({email:v.email,password:v.password,options:{data:{full_name:v.name},emailRedirectTo:location.origin+location.pathname+location.search}});if(error)throw error;toast('Confira seu e-mail para confirmar o cadastro.');state.authMode='login';renderAuth();return}
  if(state.authMode==='reset'){const {error}=await db().auth.resetPasswordForEmail(v.email,{redirectTo:location.origin+location.pathname+location.search});if(error)throw error;toast('Se o e-mail existir, enviaremos instruções.');state.authMode='login';renderAuth();return}
  const {error}=await db().auth.signInWithPassword({email:v.email,password:v.password});if(error)throw error;const {data:{session}}=await db().auth.getSession();await loadAuth(session)}
-async function saveAutomation(form){const f=new FormData(form),json=String(f.get('variable_mapping')||'{}');let map;try{map=JSON.parse(json)}catch{throw Error('O mapeamento de variáveis precisa ser JSON válido.')}if(typeof map!=='object'||Array.isArray(map)||map===null)throw Error('Mapeamento precisa ser um objeto JSON.');const type=state.editing?.type||f.get('type');const channel=f.get('channel_id'),template=f.get('template_id');if(!state.channels.some(c=>c.id===channel)||!state.templates.some(t=>t.id===template))throw Error('Canal ou template não está disponível.');const serviceIds=[...form.querySelector('[name="service_ids"]').selectedOptions].map(x=>x.value);
- const rules={service_ids:serviceIds,cross_sell_target_service_id:f.get('cross_sell_target_service_id')||null,recipient_phone:f.get('recipient_phone')||'',min_stock:Number(f.get('min_stock')||0),cooldown_days:Number(f.get('cooldown_days')||7),date_basis:f.get('date_basis')};
- if(['stock','arrival'].includes(type)&&!/^\+?\d{10,15}$/.test(String(rules.recipient_phone||'').replace(/[\s()-]/g,'')))throw Error('Informe o número destinatário com DDI para alertas de estoque e chegada.');
- const obj={establishment_id:state.current.id,type,name:String(f.get('name')||'').trim(),enabled:f.has('enabled'),delay_days:Number(f.get('delay_days')||0),send_time:f.get('send_time')||'09:00',channel_id:channel,template_id:template,rules,variable_mapping:map,updated_at:new Date().toISOString()};if(!obj.name)throw Error('Preencha o nome da automação.');if(!state.editing)obj.created_by=state.user.id;
- const result=state.editing?await db().from('automations').update(obj).eq('id',state.editing.id).eq('establishment_id',state.current.id).select('id').single():await db().from('automations').insert(obj).select('id').single();if(result.error)throw result.error;
- // Regras de seleção ficam em JSON, evitando uma segunda gravação parcial.
- toast('Automação salva no Supabase.');state.modal=null;await loadTenant();render();}
+async function saveAutomation(form){
+ if(!canManage()) throw Error('Seu perfil não pode alterar automações.');
+ const f=new FormData(form), original=state.editing;
+ const type=original?.type||f.get('type');
+ const channel=f.get('channel_id'),template=f.get('template_id');
+ if(!activeChannels().some(x=>x.id===channel)||!activeTemplates().some(x=>x.id===template)) throw Error('Escolha um canal de WhatsApp e um modelo ativos.');
+ const rules={...original?.rules,cooldown_days:Number(f.get('cooldown_days'))};
+ if(!original||!form.querySelector('.service-picker').hidden) rules.service_ids=f.getAll('service_ids');
+ if(f.has('cross_sell_target_service_id')) rules.cross_sell_target_service_id=f.get('cross_sell_target_service_id');
+ if(f.has('date_basis')) rules.date_basis=f.get('date_basis');
+ if(f.has('min_stock')) rules.min_stock=Number(f.get('min_stock'));
+ if(f.has('recipient_phone')){
+  rules.recipient_phone=String(f.get('recipient_phone')).replace(/[\s()-]/g,'');
+  if(!/^\+?[1-9]\d{9,14}$/.test(rules.recipient_phone)) throw Error('Informe o telefone do responsável com DDI.');
+ }
+ const tenant=state.current.id;
+ const obj={establishment_id:tenant,type,name:String(f.get('name')).trim(),enabled:f.has('enabled'),
+  delay_days:Number(f.get('delay_days')),send_time:f.get('send_time'),channel_id:channel,template_id:template,
+  rules,variable_mapping:readVariableMapping(form),updated_at:new Date().toISOString()};
+ if(!obj.name) throw Error('Preencha o nome da automação.');
+ const result=original?await db().from('automations').update(obj).eq('id',original.id).eq('establishment_id',tenant).select('id').single()
+  :await db().from('automations').insert({...obj,created_by:state.user.id}).select('id').single();
+ if(result.error) throw result.error;
+ toast('Automação salva.');
+ if(!form.isConnected) return;
+ form.dataset.submitting='false';
+ closeModal();
+ await loadTenant();
+ if(state.current?.id===tenant) render();
+}
+
 async function saveEstablishment(form){const f=new FormData(form),name=String(f.get('name')||''),slug=String(f.get('slug')||'');const {error}=await db().rpc('create_establishment',{p_name:name,p_slug:slug,p_timezone:f.get('timezone')});if(error)throw error;toast('Estabelecimento criado.');state.modal=null;await loadAuth(state.session);state.page='admin';render()}
-async function saveCredentials(form){const f=new FormData(form);const {error}=await db().rpc('update_integration_credentials',{p_est:state.modal.id,p_avec_token:f.get('avec_token')||null,p_clickmassa_token:f.get('clickmassa_token')||null,p_clickmassa_url:f.get('clickmassa_url')||null});if(error)throw error;toast('Credenciais armazenadas.');state.modal=null;await loadTenant();render()}
+async function saveCredentials(form){const f=new FormData(form);const url=f.get('clickmassa_url');if(url&&new URL(url).protocol!=='https:') throw Error('Use uma URL HTTPS para a integração.');const {error}=await db().rpc('update_integration_credentials',{p_est:state.modal.id,p_avec_token:f.get('avec_token')||null,p_clickmassa_token:f.get('clickmassa_token')||null,p_clickmassa_url:f.get('clickmassa_url')||null});if(error)throw error;toast('Credenciais armazenadas.');state.modal=null;await loadTenant();render()}
 async function saveAccess(form){const f=new FormData(form);const {error}=await db().rpc('grant_membership_by_email',{p_est:state.modal.id,p_email:f.get('email'),p_role:f.get('role')});if(error)throw error;toast('Usuário autorizado.');state.modal=null;render()}
 async function saveServiceReturn(form){const days=Number(new FormData(form).get('default_return_days'));const {error}=await db().from('services').update({default_return_days:days}).eq('id',state.modal.id).eq('establishment_id',state.current.id);if(error)throw error;toast('Intervalo salvo.');state.modal=null;await loadTenant();render()}
-async function sendManual(form){const f=new FormData(form),ids=f.getAll('customer_ids');if(!ids.length)throw Error('Selecione pelo menos um cliente.');if(ids.length>100)throw Error('Faça envios de até 100 clientes por vez.');const ch=f.get('channel_id'),tmp=f.get('template_id');if(!ch||!tmp)throw Error('Selecione canal e template.');if(!f.has('confirm_consent'))throw Error('É necessário confirmar o consentimento.');const eligible=ids.map(id=>state.customers.find(c=>c.id===id)).filter(Boolean);if(eligible.length!==ids.length||eligible.some(c=>!c.marketing_opt_in||c.opted_out_at))throw Error('Um ou mais clientes não são elegíveis.');const service=f.get('service_id');let manualMapping;try{manualMapping=JSON.parse(String(f.get('manual_mapping')||'{}'))}catch{throw Error('Mapeamento manual precisa ser um JSON válido.')}if(!manualMapping||typeof manualMapping!=='object'||Array.isArray(manualMapping))throw Error('Mapeamento manual precisa ser um objeto JSON.');if(service){const selected=new Set(state.appointments.filter(a=>a.service_id===service).map(a=>a.customer_id));if(eligible.some(c=>!selected.has(c.id)))throw Error('Um ou mais clientes não possuem o serviço escolhido no histórico sincronizado.');}
- const jobs=eligible.map(c=>({establishment_id:state.current.id,customer_id:c.id,channel_id:ch,template_id:tmp,source:'manual',status:'queued',idempotency_key:`manual:${crypto.randomUUID()}:${c.id}`,payload:{service_id:service||null,requested_by:state.user.id,variable_mapping:manualMapping}}));const {error}=await db().from('message_jobs').insert(jobs);if(error)throw error;toast(`${jobs.length} mensagem(ns) adicionada(s) à fila. Envio depende do n8n.`);await loadTenant();state.page='reports';render()}
-async function handleAction(btn){const action=btn.dataset.action,id=btn.dataset.id;if(action==='auth-mode'){state.authMode=btn.dataset.mode;renderAuth();return}if(action==='avec-select'){state.avecReportCode=btn.dataset.code;render();return}if(action==='avec-copy'){const r=state.avecCatalog.find(x=>x.code===btn.dataset.code);if(!r)return;await navigator.clipboard.writeText(JSON.stringify({method:r.method,base_url:'https://api.avec.beauty',path:r.path,headers:{Authorization:'TOKEN_AVEC_SERVER_SIDE','Content-Type':'application/json'},parameters:r.params.map(p=>({name:p.name,type:p.type,example:p.sample})),pagination:{page:1,limit:250,until:'HasMore === false'}},null,2));toast('Especificação copiada sem credenciais.');return}if(action==='toggle-nav'){state.navOpen=!state.navOpen;render();return}if(action==='navigate'){state.page=btn.dataset.page;state.navOpen=false;render();return}if(action==='logout'){const {error}=await db().auth.signOut();if(error)throw error;state.session=null;state.user=null;renderAuth();return}if(action==='close-modal'){state.modal=null;state.editing=null;render();return}if(action==='refresh'){await loadTenant();render();toast('Dados atualizados.');return}if(action==='new-automation'){openModal('automation','',btn.dataset.type||'csat');return}if(action==='edit-automation'){openModal('automation',id);return}if(action==='add-establishment'||action==='credentials'||action==='grant-access'||action==='customer-detail'||action==='service-return'){openModal(action,id);return}if(action==='copy-link'){await navigator.clipboard.writeText(tenantUrl(state.current.slug));toast('Link copiado.');return}
- if(action==='toggle-automation'){const a=state.modules.find(x=>x.id===id);if(!a)return;const {error}=await db().from('automations').update({enabled:!a.enabled,updated_at:new Date().toISOString()}).eq('id',id).eq('establishment_id',state.current.id);if(error)throw error;await loadTenant();render();return}
+async function sendManual(form){
+ if(!canSend()) throw Error('Seu perfil não pode enfileirar mensagens.');
+ const f=new FormData(form), ids=[...state.manual.selected].sort();
+ if(!ids.length||ids.length>100) throw Error('Selecione de 1 a 100 clientes.');
+ if(!f.has('confirm_consent')) throw Error('Confirme o consentimento dos destinatários.');
+ const channel=f.get('channel_id'),template=f.get('template_id');
+ if(!activeChannels().some(x=>x.id===channel)||!activeTemplates().some(x=>x.id===template)) throw Error('Escolha um canal de WhatsApp e um modelo ativos.');
+ const tenant=state.current.id;
+ const payload={service_id:f.get('service_id')||null,requested_by:state.user.id,variable_mapping:readVariableMapping(form)};
+ const fingerprint=JSON.stringify([tenant,channel,template,payload,ids]);
+ if(form.draft?.fingerprint!==fingerprint) form.draft={fingerprint,id:crypto.randomUUID()};
+ const jobs=ids.map(id=>({establishment_id:tenant,customer_id:id,channel_id:channel,template_id:template,
+  source:'manual',status:'queued',idempotency_key:`manual:${form.draft.id}:${id}`,payload}));
+ const {error}=await db().from('message_jobs').insert(jobs);
+ if(error){
+  if(error.code!=='23505') throw error;
+  const previous=await queryData('message_jobs',q=>q.eq('idempotency_key',jobs[0].idempotency_key),'id',tenant);
+  if(!previous.length) throw error;
+ }
+ toast(`${jobs.length} ${jobs.length===1?'mensagem adicionada':'mensagens adicionadas'} à fila.`);
+ if(!form.isConnected) return;
+ state.manual.selected.clear();
+ state.page='reports';
+ await loadTenant();
+ if(state.current?.id===tenant&&state.page==='reports') render();
+}
+
+async function handleAction(btn){const action=btn.dataset.action,id=btn.dataset.id;if(action==='retry-avec'){void loadAvecCatalog();render();return}
+ if(action==='contact-page'){
+  const manual=btn.dataset.mode==='manual';
+  const view=manual?state.manual:browse;
+  view.page=Math.max(0,view.page+Number(btn.dataset.step));
+  await loadContactPage(manual);
+  document.querySelector(manual?'#customer-search':'#customer-filter')?.focus();
+  return;
+ }
+ if(action==='clear-recipients'){
+  const form=btn.closest('form');
+  state.manual.selected.clear();
+  for(const input of form.querySelectorAll('[name="customer_ids"]')) input.checked=false;
+  syncRecipientSelection(form);
+  return;
+ }
+ if(action==='customer-detail'){await openCustomerDetail(id);return}
+ if(['new-automation','edit-automation','toggle-automation','delete-automation','service-return'].includes(action)&&!canManage()) throw Error('Seu perfil não pode alterar esta configuração.');
+ if(action==='retry-load'){location.reload();return}if(action==='retry-access'){await loadAuth(state.session);return}if(action==='auth-mode'){state.authMode=btn.dataset.mode;renderAuth();return}if(action==='avec-select'){
+  state.avecReportCode=btn.dataset.code;render();
+  const group=btn.classList.contains('avec-report-button')?'.avec-report-list':'.avec-map';
+  const replacement=[...document.querySelectorAll(group+' [data-code]')].find(x=>x.dataset.code===btn.dataset.code);
+  replacement?.focus();
+  return;
+ }if(action==='avec-copy'){const r=state.avecCatalog.find(x=>x.code===btn.dataset.code);if(!r)return;await navigator.clipboard.writeText(JSON.stringify({method:r.method,base_url:'https://api.avec.beauty',path:r.path,headers:{Authorization:'TOKEN_AVEC_SERVER_SIDE','Content-Type':'application/json'},parameters:r.params.map(p=>({name:p.name,type:p.type,example:p.sample})),pagination:{page:1,limit:250,until:'HasMore === false'}},null,2));toast('Especificação copiada sem credenciais.');return}if(action==='toggle-nav'){
+  state.navOpen=!state.navOpen;
+  document.querySelector('.sidebar').classList.toggle('open',state.navOpen);
+  document.querySelector('.nav-scrim').hidden=!state.navOpen;
+  document.querySelector('.mobile-menu').setAttribute('aria-expanded',String(state.navOpen));
+  (state.navOpen?document.querySelector('.nav-link[aria-current]'):document.querySelector('.mobile-menu'))?.focus();
+  return;
+ }if(action==='navigate'){
+  const next=btn.dataset.page;
+  if(state.page!==next){
+   state.manual.selected.clear();
+   state.manual.page=0; browse.page=0;
+  }
+  state.page=next;state.navOpen=false;render();
+  const title=document.querySelector('.content h1');
+  if(title){title.tabIndex=-1;title.focus({preventScroll:true})}
+  window.scrollTo(0,0);
+  return;
+ }if(action==='logout'){const {error}=await db().auth.signOut();if(error)throw error;state.authMode='login';state.ticket=null;state.ticketVerified=false;await loadAuth(null);return}if(action==='close-modal'){closeModal();return}if(action==='refresh'){await loadTenant();render();toast('Dados atualizados.');return}if(action==='new-automation'){openModal('automation','',btn.dataset.type||'csat');return}if(action==='edit-automation'){openModal('automation',id);return}if(action==='add-establishment'||action==='credentials'||action==='grant-access'||action==='service-return'){openModal(action,id);return}if(action==='copy-link'){await navigator.clipboard.writeText(tenantUrl(state.current.slug));toast('Link copiado.');return}
+ if(action==='toggle-automation'){const a=state.modules.find(x=>x.id===id);if(!a)return;if(!a.enabled&&(!activeChannels().some(c=>c.id===a.channel_id)||!activeTemplates().some(t=>t.id===a.template_id))) throw Error('Edite a regra e escolha um canal e um modelo ativos.');const {error}=await db().from('automations').update({enabled:!a.enabled,updated_at:new Date().toISOString()}).eq('id',id).eq('establishment_id',state.current.id);if(error)throw error;await loadTenant();render();return}
  if(action==='delete-automation'){if(!confirm('Excluir esta automação permanentemente?'))return;const {error}=await db().from('automations').delete().eq('id',id).eq('establishment_id',state.current.id);if(error)throw error;await loadTenant();render();toast('Automação excluída.');return}
  if(action==='toggle-establishment'){const e=state.establishments.find(x=>x.id===id);if(!e)return;if(!confirm(`${e.active?'Desativar':'Ativar'} ${e.name}?`))return;const {error}=await db().from('establishments').update({active:!e.active}).eq('id',id);if(error)throw error;await loadAuth(state.session);state.page='admin';render();return}}
-function installPostMessage(){window.addEventListener('message',(event)=>{const allowed=Array.isArray(conf.allowedParentOrigins)?conf.allowedParentOrigins:[];if(!allowed.length||!allowed.includes(event.origin)||event.source!==window.parent)return;let payload=event.data;if(typeof payload==='string'){try{payload=JSON.parse(payload)}catch{return}}if(!payload||typeof payload!=='object'||Array.isArray(payload))return;
+function installPostMessage(){window.addEventListener('message',(event)=>{const allowed=Array.isArray(conf.allowedParentOrigins)?conf.allowedParentOrigins:[];if(window.parent===window||!allowed.length||!allowed.includes(event.origin)||event.source!==window.parent)return;let payload=event.data;if(typeof payload==='string'){if(payload.length>20000)return;try{payload=JSON.parse(payload)}catch{return}}if(!payload||typeof payload!=='object'||Array.isArray(payload))return;
  // Aceita formatos comuns, sem presumir contrato final da plataforma.
  const ticket=payload.ticket||payload.data?.ticket||payload.payload?.ticket||null;const ticketId=ticket?.id??payload.ticket_id??payload.ticketId;
  if(!ticketId)return;const contact=ticket?.contact||payload.contact||payload.data?.contact||{};const phone=contact.phone||contact.phone_number||ticket?.phone||payload.phone||'';
- const obj={ticketId:String(ticketId).slice(0,100),contactId:String(contact.id||ticket?.contact_id||'').slice(0,100),phone:String(phone).slice(0,40),origin:String(payload.origin||event.origin).slice(0,200)};
- state.ticket=obj;state.ticketVerified=true;if(state.page==='ticket')render();
+ const obj={ticketId:String(ticketId).slice(0,100),contactId:String(contact.id||ticket?.contact_id||'').slice(0,100),phone:String(phone).slice(0,40),origin:event.origin};
+ state.ticket=obj;state.ticketVerified=true;if(state.page==='ticket'&&state.user&&!state.modal)render();
  });}
-function wireEvents(){document.addEventListener('click',async e=>{const btn=e.target.closest('[data-action]');if(!btn)return;e.preventDefault();try{await handleAction(btn)}catch(err){apiError(err)}});
- document.addEventListener('submit',async e=>{const form=e.target;if(!['auth-form','establishment-form','credentials-form','access-form','automation-form','manual-form','service-return-form'].includes(form.id))return;e.preventDefault();const btn=form.querySelector('button[type="submit"]');if(btn)btn.disabled=true;try{if(form.id==='auth-form')await submitAuth(form);if(form.id==='establishment-form')await saveEstablishment(form);if(form.id==='credentials-form')await saveCredentials(form);if(form.id==='access-form')await saveAccess(form);if(form.id==='automation-form')await saveAutomation(form);if(form.id==='manual-form')await sendManual(form);if(form.id==='service-return-form')await saveServiceReturn(form)}catch(err){apiError(err)}finally{if(btn?.isConnected)btn.disabled=false}});
- document.addEventListener('change',async e=>{if(e.target.id==='tenant-select'){state.current=state.establishments.find(x=>x.id===e.target.value);if(state.current)localStorage.setItem('flowsuite_tenant',state.current.slug);state.page='dashboard';await loadTenant();render()}});
- document.addEventListener('input',e=>{if(e.target.id==='avec-search'){state.avecSearch=e.target.value;const caret=e.target.selectionStart;render();const input=document.getElementById('avec-search');input?.focus();input?.setSelectionRange(caret,caret);return}if(e.target.id==='customer-filter'){const search=e.target.value.toLocaleLowerCase('pt-BR');const matching=state.customers.filter(c=>(c.name+' '+(c.phone||'')).toLocaleLowerCase('pt-BR').includes(search));const target=document.getElementById('customer-results');if(target)target.innerHTML=customerTable(matching.slice(0,100));}if(e.target.id==='customer-search'){const term=e.target.value.toLowerCase();document.querySelectorAll('[data-customer-row]').forEach(x=>x.style.display=x.dataset.customerRow.includes(term)?'flex':'none');}if(e.target.name==='name'&&e.target.form?.id==='establishment-form'){const slug=document.querySelector('#establishment-form [name="slug"]');if(slug&&!slug.dataset.touched)slug.value=slugify(e.target.value)}if(e.target.name==='slug')e.target.dataset.touched='1'});
- document.addEventListener('click',e=>{if(e.target?.id==='modal-bg'){state.modal=null;render()}});
- document.addEventListener('keydown',e=>{if(e.key==='Escape'&&state.modal){state.modal=null;render()}});
+function wireEvents(){
+ const submits={
+  'auth-form':submitAuth,'establishment-form':saveEstablishment,'credentials-form':saveCredentials,
+  'access-form':saveAccess,'automation-form':saveAutomation,'manual-form':sendManual,'service-return-form':saveServiceReturn
+ };
+ document.addEventListener('click',async e=>{
+  if(e.target.id==='modal-bg'){closeModal();return}
+  const btn=e.target.closest('[data-action]');
+  if(!btn) return;
+  e.preventDefault();
+  try{await handleAction(btn)}catch(err){apiError(err)}
+ });
+ document.addEventListener('submit',async e=>{
+  const form=e.target;
+  if(!Object.hasOwn(submits,form.id)) return;
+  e.preventDefault();
+  if(form.dataset.submitting==='true') return;
+  const submit=form.querySelector('[type="submit"]');
+  const title=submit.textContent;
+  form.dataset.submitting='true';
+  submit.disabled=true;
+  submit.textContent='Salvando…';
+  try{await submits[form.id](form)}catch(err){apiError(err)}finally{
+   if(form.isConnected){
+    form.dataset.submitting='false';
+    submit.textContent=title;
+    submit.disabled=false;
+    if(form.id==='manual-form') syncRecipientSelection(form);
+   }
+  }
+ });
+ document.addEventListener('change',async e=>{
+  const input=e.target,form=input.form;
+  if(input.id==='tenant-select'){
+   clearTenant();
+   state.current=state.establishments.find(x=>x.id===input.value);
+   if(state.current) localStorage.setItem('flowsuite_tenant',state.current.slug);
+   state.page='dashboard';state.navOpen=false;
+   const loading=loadTenant();
+   render();
+   await loading;
+   if(state.current?.id===input.value) render();
+   return;
+  }
+  if(!form||!['manual-form','automation-form'].includes(form.id)) return;
+  if(input.name==='customer_ids'){
+   if(input.checked && state.manual.selected.size>=100){
+    input.checked=false;
+    toast('Selecione até 100 destinatários por envio.',true);
+    return;
+   }
+   if(input.checked) state.manual.selected.add(input.value);
+   else state.manual.selected.delete(input.value);
+   syncRecipientSelection(form);
+  }else if(input.name==='service_id'){
+   if(state.manual.selected.size) toast('Seleção limpa após a mudança de serviço.');
+   state.manual.selected.clear();
+   state.manual.page=0;
+   syncRecipientSelection(form);
+   variablePanel(form,{},readVariableMapping(form,true));
+   void loadContactPage(true);
+  }else if(input.name==='type'){
+   updateAutomationFields(form);
+   variablePanel(form,{},readVariableMapping(form,true));
+  }else if(input.name==='template_id'){
+   const mapping=input.value===state.editing?.template_id?state.editing.variable_mapping||{}:{};
+   variablePanel(form,mapping);
+  }else if(input.closest('[data-variable]')){
+   updateMessagePreview(form);
+  }
+ });
+ document.addEventListener('input',e=>{
+  const input=e.target;
+  if(input.id==='avec-search') filterAvec(input.value);
+  if(input.id==='customer-search'||input.id==='customer-filter'){
+   const manual=input.id==='customer-search';
+   const view=manual?state.manual:browse;
+   view.page=0;
+   view.request++;
+   clearTimeout(contactSearchTimer);
+   contactSearchTimer=setTimeout(()=>{if(input.isConnected) void loadContactPage(manual)},250);
+  }
+  if(input.name==='name'&&input.form?.id==='establishment-form'){
+   const slug=input.form.elements.slug;
+   if(!slug.dataset.touched) slug.value=slugify(input.value);
+  }
+  if(input.name==='slug') input.dataset.touched='1';
+ });
+ document.addEventListener('keydown',e=>{
+  if(!state.modal){
+   if(e.key==='Escape'&&state.navOpen) document.querySelector('.mobile-menu').click();
+   return;
+  }
+  if(e.key==='Escape'){closeModal();return}
+  if(e.key!=='Tab') return;
+  const focusables=[...document.querySelectorAll('.modal button:not(:disabled), .modal input:not(:disabled), .modal select:not(:disabled), .modal summary, .modal a[href]')].filter(x=>x.getClientRects().length);
+  const first=focusables[0],last=focusables.at(-1);
+  if(e.shiftKey&&document.activeElement===first){e.preventDefault();last?.focus()}
+  if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first?.focus()}
+ });
 }
-wireEvents();boot().catch(apiError);
+wireEvents();
+boot().catch(err=>{
+ el.innerHTML='<main class="splash"><p>Não foi possível abrir o ambiente.</p><button class="btn" data-action="retry-load">Tentar novamente</button></main>';
+ apiError(err);
+});

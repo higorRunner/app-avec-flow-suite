@@ -34,7 +34,7 @@ O painel cria registros `message_jobs` com:
   "customer_id": "UUID",
   "channel_id": "UUID",
   "template_id": "UUID",
-  "payload": {"service_id": null, "requested_by": "UUID"},
+  "payload": {"service_id": null, "requested_by": "UUID", "variable_mapping": {"1": "customer.name"}},
   "idempotency_key": "manual:UUID:UUID"
 }
 ```

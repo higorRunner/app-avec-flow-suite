@@ -1,9 +1,19 @@
 Options -Indexes
 DirectoryIndex index.html
+RewriteEngine On
+RewriteRule ^(?:sql|docs|integrations|n8n|tests)(?:/|$) - [F,L,NC]
+RewriteRule (^|/)\.(?!well-known(?:/|$)) - [F,L]
+RewriteRule ^e/[a-z0-9-]+/?$ index.html [L]
 <IfModule mod_headers.c>
 Header always set X-Content-Type-Options "nosniff"
-Header always set Referrer-Policy "strict-origin-when-cross-origin"
+Header always set Referrer-Policy "no-referrer"
+Header always set Permissions-Policy "camera=(), microphone=(), geolocation=()"
+# Mantenha os hosts em connect-src e frame-ancestors alinhados com config.js.
+Header always set Content-Security-Policy "default-src 'none'; base-uri 'self'; object-src 'none'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://proton-crm-supabase.sizrit.easypanel.host wss://proton-crm-supabase.sizrit.easypanel.host; form-action 'self'; frame-ancestors 'self' https://cs.clickmassa.com.br"
+<FilesMatch "^(config\.js|index\.html)$">
+Header always set Cache-Control "no-cache"
+</FilesMatch>
 </IfModule>
-<FilesMatch "^(config\.example\.js|README\.md)$">
+<FilesMatch "^(config\.example\.js|Dockerfile|nginx\.conf|.*\.(sql|md))$">
 Require all denied
 </FilesMatch>
