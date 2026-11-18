@@ -1,11 +1,6 @@
-sql
-README.md
-docs
-config.example.js
-.htaccess
-.git
-.test-deps
-n8n
-integrations
-tests
-worker
+**
+!server/
+!server/**
+!public/
+!public/**
+!Dockerfile

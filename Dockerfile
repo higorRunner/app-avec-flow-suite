@@ -1,13 +1,10 @@
-FROM nginx:alpine
-COPY nginx.conf /etc/nginx/conf.d/default.conf
-COPY index.html config.js /usr/share/nginx/html/
-COPY assets /usr/share/nginx/html/assets
-ARG GIT_SHA
-RUN set -eu; \
-    cd /usr/share/nginx/html; \
-    checksum="$(find assets -type f -exec sha256sum {} + | sort | sha256sum)"; \
-    asset_version="${checksum%% *}"; \
-    sed -i -e "s/v=local/v=$asset_version/g" \
-        -e "s/name=\"flowsuite-asset-version\" content=\"local\"/name=\"flowsuite-asset-version\" content=\"$asset_version\"/" index.html; \
-    printf 'git=%s\nassets=%s\n' "${GIT_SHA:-unknown}" "$asset_version" > version.txt
-EXPOSE 80
+FROM node:24-alpine
+WORKDIR /app
+ARG GIT_SHA=rebuild-1
+ENV NODE_ENV=production PORT=3000 GIT_SHA=${GIT_SHA}
+COPY --chown=node:node server ./server
+COPY --chown=node:node public ./public
+USER node
+EXPOSE 3000
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s CMD node -e "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+CMD ["node","server/main.mjs"]

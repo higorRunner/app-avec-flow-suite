@@ -74,9 +74,10 @@ export async function readCatalog({ email, password, tenantId, fetchImpl = fetch
   const login = await call(`${origin}/auth/login/`, {
     operation: 'autenticação do catálogo', body: { email, password, captchaToken: '' }, fetchImpl,
   });
-  if (String(login?.tenantId) !== String(tenantId) || typeof login?.token !== 'string' || !login.token) {
+  if (!/^[1-9]\d*$/.test(String(login?.tenantId)) || (tenantId && String(login.tenantId) !== String(tenantId)) || typeof login?.token !== 'string' || !login.token) {
     throw new Error('O login Clickmassa não confirmou o tenant ou não retornou uma sessão de catálogo.');
   }
+  tenantId = String(login.tenantId);
   const token = login.token;
   const response = await call(`${origin}/whatsapp/?hideInactive=true`, { operation: 'listar canais', token, fetchImpl });
   if (!Array.isArray(response)) throw new Error('Lista de canais Clickmassa fora do formato observado.');
@@ -106,7 +107,7 @@ export async function readCatalog({ email, password, tenantId, fetchImpl = fetch
       if (!result.hasMore) break;
     }
   }
-  return { channels, templates: [...templates.values()] };
+  return { tenantId, channels, templates: [...templates.values()] };
 }
 
 function valueFor(job, field) {

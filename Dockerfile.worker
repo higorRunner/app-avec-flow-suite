@@ -1,6 +1,0 @@
-FROM node:24-alpine
-WORKDIR /srv/flowsuite
-COPY --chown=node:node worker/ ./worker/
-COPY --chown=node:node integrations/avec-client.mjs ./integrations/avec-client.mjs
-USER node
-CMD ["node", "worker/service.mjs"]

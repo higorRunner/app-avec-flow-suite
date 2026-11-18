@@ -1,51 +1,63 @@
 # FlowSuite
 
-Painel web, banco Supabase e serviço de processamento do próprio FlowSuite no EasyPanel. O navegador autentica no Supabase. O serviço privado sincroniza o catálogo e consome a fila de mensagens.
+Site, API e execução das rotinas rodam no mesmo processo Node.js. O Supabase fornece o banco PostgreSQL e a API privada de acesso ao banco.
 
-## Instalação no EasyPanel
+## Reinstalar
 
-1. Aplique as migrações `004_native_worker.sql`, `005_integration_setup.sql` e `006_native_automations.sql` nessa ordem, após `003_v3_hardening.sql`. A migração 005 usa a extensão Supabase Vault. Em uma instalação nova comece por `001_schema.sql` e configure o administrador.
-2. No serviço web, selecione a fonte GitHub, branch `main`, Build Path `/`, builder `Dockerfile` e porta 80. Acompanhe o deployment até concluir e abra `/version.txt` no domínio web. O campo `git` deve corresponder ao commit da implantação. Se o commit for anterior ao esperado, confira a fonte e a revisão nos logs da implantação do serviço web.
-3. Crie um segundo serviço App privado no mesmo projeto EasyPanel, no mesmo repositório e branch. Use o builder Dockerfile, caminho `Dockerfile.worker` e Build Path `/`. O processo roda em segundo plano, sem domínio ou porta pública. Atualize o serviço web e o privado a partir da mesma revisão.
-4. Configure `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` e `FLOWSUITE_ESTABLISHMENT_ID` nas variáveis privadas do serviço. O UUID está no cartão da unidade no **Painel master**. Uma instância do serviço atende uma unidade.
-5. Abra `/?admin=1`, entre com um administrador master, crie ou selecione a unidade e abra **Integrações**. Salve o token AVEC e o login do Clickmassa. Aguarde a sincronização dos canais ou use **Atualizar status** para conferir o resultado. Selecione cada canal que pode enviar, salve a URL externa sem parâmetros, o token do mesmo canal e marque **Liberar envios neste canal** quando estiver pronto para o teste.
+1. Exporte um backup dos dados atuais e pare o antigo serviço executor, se ele tiver sido criado.
+2. No SQL Editor do seu Supabase, execute **[sql/RECRIAR_FLOWSUITE.sql](sql/RECRIAR_FLOWSUITE.sql)**. Esse arquivo apaga as tabelas e funções das versões do FlowSuite e cria toda a estrutura desta versão em uma transação. Os dados e as contas do FlowSuite serão apagados. A infraestrutura de autenticação, armazenamento e extensões do Supabase continua disponível. O script pode ser executado novamente para outro reset.
+3. No serviço web atual do EasyPanel, use o repositório deste projeto, branch **main**, Build Path **/** e builder **Dockerfile** com caminho **Dockerfile**.
+4. Configure as variáveis abaixo nas variáveis privadas desse mesmo serviço.
+5. No domínio do serviço, altere a porta de destino para **3000** e faça **Deploy**.
+6. Abra o site em HTTPS e entre com o e-mail e a senha iniciais. Defina sua senha pessoal no primeiro acesso.
 
-A senha Clickmassa é usada para obter a sessão de catálogo. A sessão é obtida de novo a cada sincronização. O token de envio permanece separado para cada canal e só é trocado ao cadastrar uma nova credencial. O Supabase Vault guarda o token AVEC, a senha e as credenciais de envio, e o painel apresenta apenas o estado de configuração. [Supabase Vault](https://supabase.com/docs/guides/database/vault)
+| Variável | Conteúdo |
+| --- | --- |
+| SUPABASE_URL | URL HTTPS da API do seu Supabase |
+| SUPABASE_SERVICE_ROLE_KEY | Chave privada service_role dessa instalação Supabase |
+| ADMIN_EMAIL | E-mail do primeiro administrador master |
+| ADMIN_PASSWORD | Senha inicial, com pelo menos 10 caracteres |
 
-O processo registra `serviço iniciado para a unidade` ao iniciar. A conexão com o Supabase atualiza o sinal de atividade independentemente da sincronização do catálogo. Nos logs do serviço privado, uma unidade ausente ou inativa indica que é preciso conferir o UUID. Falhas de RPC incluem o nome da função, o status HTTP e o código de erro recebido do Supabase, quando disponível.
+Na instalação própria do Supabase, a chave privada costuma estar nas variáveis do serviço ou Compose do Supabase como SERVICE_ROLE_KEY ou SUPABASE_SERVICE_KEY. Copie esse valor para SUPABASE_SERVICE_ROLE_KEY do FlowSuite. A chave permanece exclusivamente no servidor.
 
-A configuração da V4 por variáveis funciona como fallback até que a primeira conta de catálogo seja salva no painel. Depois de migrar, remova `CLICKMASSA_EMAIL`, `CLICKMASSA_PASSWORD`, `CLICKMASSA_TENANT_ID` e as credenciais dos canais das variáveis do serviço. A opção `FLOWSUITE_SEND_ENABLED=false` pausa todos os envios do serviço quando configurada. Remova essa opção para o painel controlar a liberação de cada canal. Caso o login exija CAPTCHA ou MFA, use uma conta ou credencial de integração autorizada pelo Clickmassa.
+Depois do primeiro cadastro, as variáveis ADMIN_EMAIL e ADMIN_PASSWORD podem ser removidas. A aplicação cria o administrador somente quando o banco está sem uma conta master. O endereço **/health** confirma a conexão com o banco e mostra o commit implantado.
 
-Para coletar amostras AVEC, configure opcionalmente `AVEC_SNAPSHOT_CODES` com códigos separados por vírgula, como `0004`. Use relatórios que não exijam parâmetros adicionais.
+As credenciais de integração são criptografadas com AES-256-GCM. O servidor usa APP_SECRET, quando configurada, ou a chave privada do Supabase como material de criptografia. Mantenha esse valor estável. Ao trocá-lo, recadastre as credenciais no painel master.
 
-## Administração e operação
+## Primeiro uso
 
-- **Painel master** reúne criação e ativação de unidades, cópia do link da equipe, configuração de integrações e atribuição de acessos.
-- **Área operacional** abre pelo link da unidade. Os perfis permanecem separados para leitura, operação e gestão das regras.
-- **Catálogos e serviços** mostra os canais conectados, os canais prontos para envio e os modelos filtráveis pelo canal. Confira a hora da última sincronização.
-- **Envio de teste** aceita um único número com DDI. Use um telefone da equipe com autorização. Escolha um canal, preencha o texto ou os campos de exemplo do modelo e confira o protocolo em **Relatórios e envios**. O modo de teste funciona antes da importação de clientes. Em **Automações → Simular**, o painel calcula a elegibilidade sem criar mensagens.
+1. No painel master, crie a unidade e abra **Integrações**.
+2. Cadastre e-mail e senha Clickmassa e clique em **Salvar e importar catálogo**. A empresa é identificada pelo retorno do login. Canais e modelos são importados e o estado aparece na mesma página.
+3. Em **Canais de envio**, configure a URL da API externa e o token emitido para cada canal. Uma URL contendo o parâmetro token pode ser colada diretamente. O token será extraído e enviado pelo servidor no header de autorização.
+4. Marque **Liberar envios neste canal** e abra a operação da unidade.
+5. Em **Envios → Envio de teste**, informe um telefone da equipe que autorizou o teste, selecione o canal e revise o conteúdo. No Oficial, use um modelo textual aprovado. No QR Code, preencha a mensagem e, se desejar, uma nota interna.
+6. Em **Relatórios**, confira o protocolo. **Aceita pelo Clickmassa** confirma que a API recebeu a mensagem. Consulte o atendimento do Clickmassa para confirmar a entrega.
+7. Cadastre os clientes e a autorização de contato. Em **Serviços e agenda**, registre serviços e atendimentos concluídos. Crie uma automação, simule a elegibilidade e ative a regra no horário desejado.
+8. No painel master, conceda acesso aos usuários da equipe e copie o link da unidade.
 
-### Envio e confirmação
+## Perfis
 
-- O canal **Oficial (WABA)** lista os modelos textuais aprovados daquele canal. O identificador usado para enviar é `hsmId`. O FlowSuite monta `params` na ordem das posições do texto. Modelos com mídia ou parâmetros adicionais de cabeçalho ou botões são exibidos no catálogo como pendentes de validação.
-- O canal **QR Code** usa texto e uma nota interna opcional. Use a URL e o token emitidos para aquele canal. A classificação segue o tipo `whatsapp` do catálogo e precisa ser confirmada com a conta de homologação.
-- O Supabase reserva cada item da fila antes de enviar e confere novamente a elegibilidade do destinatário. O protocolo do FlowSuite é enviado como `externalKey`. Uma resposta `pending` aparece como **Aguardando confirmação** e o protocolo do Clickmassa fica em **Relatórios e envios**. Confirme resultados inconclusivos no Clickmassa pelo protocolo antes de refazer um envio. A consulta automática de confirmação depende do contrato de status ou de webhook do fornecedor.
-- O serviço avalia as regras ativas a cada minuto. Pesquisa de satisfação, pós-atendimento, retorno, venda complementar, aniversário e inatividade usam os dados já normalizados no Supabase. As regras respeitam fuso, horário, consentimento, intervalo entre mensagens e controle de duplicidade.
-- Regras marcadas como **Revisar ativação** exigem ativação explícita. A execução considera eventos cujo horário de envio é posterior à ativação. Estoque e chegada permanecem como rascunhos até confirmar as respectivas fontes de eventos.
+- **Master** cria unidades, configura credenciais, concede acesso e pode abrir a operação.
+- **Gestor** administra clientes, agenda, envios e rotinas da unidade.
+- **Operador** administra clientes, agenda e envios.
+- **Consulta** visualiza os dados da unidade.
 
-### AVEC
+O login do FlowSuite é próprio. As senhas são armazenadas com scrypt e salt individual. As sessões usam cookies HttpOnly com validade de oito horas. O acesso aos dados passa pela API do servidor, que verifica o vínculo com a unidade e o perfil antes de consultar o banco. Os papéis públicos do Supabase ficam sem acesso às tabelas da aplicação.
 
-Cadastre o token da unidade em **Painel master → Integrações**. Quando `AVEC_SNAPSHOT_CODES` estiver definido, o serviço coleta a primeira página dos relatórios configurados a cada hora e armazena a resposta em `avec_report_snapshots`, acessível ao servidor. A conversão desses relatórios em clientes, serviços, agendamentos e eventos de automação depende de respostas AVEC representativas. O catálogo de relatórios descreve os parâmetros conhecidos. No painel master, **Testar AVEC** consulta o relatório 0004 e mostra quantos registros retornaram na primeira página.
+## Conexões e rotinas
 
-## Desenvolvimento
+O catálogo Clickmassa sincroniza ao salvar a conta e a cada 15 minutos. Salvar uma credencial mantém a senha antiga quando o campo fica vazio. A senha de catálogo e o token externo de envio são independentes.
 
-Execute na raiz:
+O relatório AVEC 0004 pode ser consultado no painel master. Após uma resposta válida, selecione as colunas de nome e telefone para importar os clientes. E-mail e nascimento são opcionais. A importação mantém o consentimento já cadastrado e deixa novos clientes sem autorização até revisão individual. As datas de nascimento importadas devem usar AAAA-MM-DD. As demais rotas AVEC e a importação de serviços e agenda exigem contratos de resposta validados. Serviços e atendimentos já podem ser cadastrados no próprio FlowSuite.
 
-```powershell
-python -m http.server 8080 --bind 127.0.0.1
-node --test --test-isolation=none tests/*.test.mjs
-```
+As rotinas disponíveis são pós-atendimento, satisfação, retorno, aniversário, inatividade e venda complementar. O serviço avalia as regras a cada minuto e processa a fila a cada cinco segundos. Usa os dados da unidade, fuso horário, autorização, intervalo entre mensagens e chave de evento para evitar duplicidade. Simulações respeitam o horário configurado e não criam mensagens. Ativar uma regra depois do horário diário inicia a execução no próximo evento elegível. Aniversários de 29/02 usam o próprio dia em anos bissextos.
 
-Abra `http://localhost:8080`. Para executar o serviço de processamento fora do Docker, use Node.js e as mesmas variáveis em um ambiente de homologação, com `node worker/service.mjs`. Com Playwright instalado, `python tests/browser_smoke.py` exercita o painel com Supabase simulado. A variável `FLOWSUITE_TEST_BROWSER` permite usar um Chromium ou Edge já instalado.
+Modelos WABA com mídia ou parâmetros especiais de cabeçalho e botões precisam de contrato de envio adicional. Respostas inconclusivas ficam reservadas para conferência pelo protocolo, pois o comportamento de idempotência e a consulta de status do fornecedor ainda precisam ser comprovados.
 
-Após publicar o serviço web pelo Dockerfile, consulte `/version.txt` para conferir o commit e a versão dos arquivos da implantação.
+## Desenvolvimento e testes
+
+Use Node.js 24 ou superior. O servidor de produção usa módulos nativos e inicia diretamente com **node server/main.mjs**. Para HTTP local, configure COOKIE_SECURE=false e acesse http://localhost:3000. Essa variável deve ficar ausente no domínio HTTPS de produção.
+
+Para instalar as ferramentas de desenvolvimento, execute **npm install**. Para rodar os testes, execute **npm test**.
+
+Os testes usam PostgreSQL local em WebAssembly e respostas Clickmassa simuladas. Eles verificam o reset SQL, permissões, criptografia, sessões, isolamento entre unidades, importação de catálogo e fila de envio. A validação de integração com contas e telefones reais é feita pelo envio de teste no painel.

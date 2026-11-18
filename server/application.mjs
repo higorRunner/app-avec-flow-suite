@@ -1,0 +1,447 @@
+import { randomUUID } from 'node:crypto';
+import { assert, AppError, text, phone, uuid, passwordHash } from './security.mjs';
+import { readCatalog, senderEndpoint, messagePayload, sendMessage, ProviderError } from './providers/clickmassa.mjs';
+import { fetchReportAll } from './providers/avec.mjs';
+import { candidates, ruleTypes } from './routines.mjs';
+
+const eq = value => 'eq.' + value;
+const fields = ['customer.name','customer.phone','customer.email','customer.birthday','service.name',
+  'appointment.scheduled_at','appointment.completed_at','establishment.name'];
+const safeUnit = ({ avec_sample, ...unit }) => ({ ...unit, sample_columns:Object.keys(avec_sample?.[0]||{}) });
+
+export function application({ db, secrets, catalog = readCatalog, send = sendMessage, report = fetchReportAll }) {
+  const busy = new Set();
+  let ticking=false;
+
+  async function one(table, where) {
+    return (await db.select(table,{...where,limit:1}))[0] || null;
+  }
+  async function credential(unit,kind) {
+    const row=await one('fs_credentials',{unit_id:eq(unit),kind:eq(kind)});
+    return row ? secrets.decrypt(row.encrypted) : null;
+  }
+  async function saveCredential(unit,kind,value) {
+    await db.upsert('fs_credentials',{unit_id:unit,kind,encrypted:secrets.encrypt(value),updated_at:new Date().toISOString()},'unit_id,kind');
+  }
+  async function event(unit,event,state,detail) {
+    await db.insert('fs_events',{unit_id:unit,event,state,detail});
+  }
+  async function access(user,unit,write=false,manage=false) {
+    const record=await one('fs_units',{id:eq(uuid(unit))});
+    assert(record,'Unidade não encontrada.',404);
+    if(user.master) return {...record,role:'master'};
+    const membership=await one('fs_memberships',{unit_id:eq(unit),user_id:eq(user.id)});
+    assert(record.active && membership,'Você não tem acesso a esta unidade.',403);
+    assert(!write || membership.role!=='viewer','Seu perfil permite consulta.',403);
+    assert(!manage || membership.role==='manager','Esta ação exige um gestor.',403);
+    return {...record,role:membership.role};
+  }
+  function master(user) { assert(user.master,'Acesso restrito ao painel master.',403); }
+  async function unitData(user,id) {
+    const unit=await access(user,id);
+    const [channels,templates,contacts,services,appointments,rules,jobs,events]=await Promise.all([
+      db.select('fs_channels',{unit_id:eq(id),order:'name'}),
+      db.select('fs_templates',{unit_id:eq(id),order:'name'}),
+      db.select('fs_contacts',{unit_id:eq(id),order:'name',limit:100}),
+      db.select('fs_services',{unit_id:eq(id),order:'name'}),
+      db.select('fs_appointments',{unit_id:eq(id),order:'scheduled_at.desc',limit:100}),
+      db.select('fs_rules',{unit_id:eq(id),order:'name'}),
+      db.select('fs_jobs',{unit_id:eq(id),order:'created_at.desc',limit:100}),
+      db.select('fs_events',{unit_id:eq(id),order:'created_at.desc',limit:30}),
+    ]);
+    return {unit:safeUnit(unit),channels,templates,contacts,services,appointments,rules,jobs,events};
+  }
+  async function integration(user,id) {
+    master(user);
+    const unit=await access(user,id);
+    const account=await credential(id,'catalog');
+    const credentials=await db.select('fs_credentials',{unit_id:eq(id),select:'kind'});
+    return {unit:safeUnit(unit),email:account?.email||'',avec:credentials.some(c=>c.kind==='avec'),
+      channels:await db.select('fs_channels',{unit_id:eq(id),order:'name'}),
+      templates:await db.select('fs_templates',{unit_id:eq(id),order:'name'})};
+  }
+  async function synchronize(id) {
+    if(busy.has(id)) return;
+    busy.add(id);
+    try {
+      const unit=await one('fs_units',{id:eq(id),active:'eq.true'});
+      if(!unit) return;
+      const account=await credential(id,'catalog');
+      assert(account,'Cadastre a conta Clickmassa.');
+      await db.update('fs_units',{id:eq(id)},{sync_state:'syncing',sync_error:null});
+      const result=await catalog({...account,tenantId:unit.catalog_tenant});
+      await db.rpc('fs_catalog_commit',{p_unit:id,p_channels:result.channels,p_templates:result.templates,p_tenant:result.tenantId});
+      await event(id,'catalog','ok',`${result.channels.length} canais e ${result.templates.length} modelos importados.`);
+    } catch(error) {
+      const detail=error instanceof ProviderError||error instanceof AppError?error.message:'Confira a conta Clickmassa e o formato do catálogo.';
+      await db.update('fs_units',{id:eq(id)},{sync_state:'error',sync_error:detail});
+      await event(id,'catalog','error',detail);
+    } finally {busy.delete(id)}
+  }
+  function launch(task) { Promise.resolve().then(task).catch(error=>console.error('Tarefa FlowSuite:',error.message)); }
+  async function syncAvec(id) {
+    const key='avec:'+id;
+    if(busy.has(key)) return;
+    busy.add(key);
+    try {
+      await db.update('fs_units',{id:eq(id)},{avec_state:'syncing',avec_error:null});
+      const value=await credential(id,'avec');
+      assert(value?.token,'Cadastre o token AVEC.');
+      const result=await report({code:'0004',token:value.token,maxPages:100});
+      // Only a bounded sample is exposed to the administrator for field mapping.
+      await db.update('fs_units',{id:eq(id)},{avec_state:'ready',avec_checked_at:new Date().toISOString(),
+        avec_sample:result.result.slice(0,5),avec_error:null});
+      const unit=await one('fs_units',{id:eq(id)});
+      if(unit.avec_mapping?.name) await importContacts(unit,result.result);
+      await event(id,'avec','ok',`${result.records} registros consultados. ${unit.avec_mapping?.name?'Clientes importados.':'Configure os campos para importar os clientes.'}`);
+    } catch {
+      const detail='Não foi possível consultar o relatório de clientes AVEC. Confira o token e o acesso ao relatório 0004.';
+      await db.update('fs_units',{id:eq(id)},{avec_state:'error',avec_error:detail});
+      await event(id,'avec','error',detail);
+    } finally {busy.delete(key)}
+  }
+  async function importContacts(unit,rows) {
+    const mapping=unit.avec_mapping;
+    assert(mapping.name && mapping.phone,'Selecione os campos de nome e telefone.');
+    const existing=await db.all('fs_contacts',{unit_id:eq(unit.id)});
+    const known=new Map(existing.map(c=>[c.phone,c]));
+    const records=new Map();
+    for(const row of rows){
+      const name=text(row[mapping.name],120);
+      let normalized;
+      try{normalized=phone(String(row[mapping.phone]||''))}catch{continue}
+      if(!name) continue;
+      const previous=known.get(normalized);
+      const record={id:previous?.id||randomUUID(),unit_id:unit.id,name,phone:normalized,email:text(row[mapping.email],160)||null,
+        consent:previous?.consent||false,birthday:previous?.birthday||null,external_id:previous?.external_id||null};
+      if(mapping.birthday && /^\d{4}-\d{2}-\d{2}$/.test(String(row[mapping.birthday]))) record.birthday=row[mapping.birthday];
+      records.set(normalized,record);
+    }
+    const values=[...records.values()];
+    for(let i=0;i<values.length;i+=200) await db.upsert('fs_contacts',values.slice(i,i+200),'unit_id,phone');
+    return values.length;
+  }
+  async function deliveryConfig(unit,channelId,templateId) {
+    const channel=await one('fs_channels',{id:eq(channelId),unit_id:eq(unit)});
+    assert(channel?.active && channel.enabled && channel.configured,'O canal precisa estar conectado e liberado para envio.');
+    let template=null;
+    if(channel.type==='waba'){
+      template=await one('fs_templates',{id:eq(uuid(templateId)),unit_id:eq(unit),channel_id:eq(channelId),active:'eq.true',supported:'eq.true'});
+      assert(template,'Escolha um modelo textual aprovado deste canal.');
+    }
+    return {channel,template};
+  }
+  function validateSender(sender,channel,tenant) {
+    senderEndpoint(sender.url);
+    let claims;
+    try{claims=JSON.parse(Buffer.from(sender.token.split('.')[1],'base64url').toString('utf8'))}
+    catch{throw new AppError('Token de envio inválido.')}
+    assert(String(claims.sessionId)===channel.external_id && String(claims.tenantId)===tenant &&
+      claims.channelType===channel.type && Number(claims.exp)>Date.now()/1000,
+      'O token precisa corresponder ao canal, à empresa e estar válido.');
+  }
+  async function ruleContext(unit) {
+    const [contacts,appointments,services,jobs]=await Promise.all([
+      db.all('fs_contacts',{unit_id:eq(unit.id)}),db.all('fs_appointments',{unit_id:eq(unit.id)}),
+      db.all('fs_services',{unit_id:eq(unit.id)}),db.all('fs_jobs',{unit_id:eq(unit.id)}),
+    ]);
+    return {unit,contacts,appointments,services,jobs};
+  }
+  async function expand(context,item,rule) {
+    const value={ 'customer.name':item.contact.name,'customer.phone':item.contact.phone,
+      'customer.email':item.contact.email,'customer.birthday':item.contact.birthday,
+      'establishment.name':context.unit.name,'service.name':item.event.service?.name };
+    for(const key of ['scheduled_at','completed_at']){
+      const date=item.event.appointment?.[key];
+      value['appointment.'+key]=date?new Intl.DateTimeFormat('pt-BR',{dateStyle:'short',timeStyle:'short',timeZone:context.unit.timezone}).format(new Date(date)):null;
+    }
+    return value;
+  }
+  async function schedule(unit) {
+    const rules=await db.select('fs_rules',{unit_id:eq(unit.id),enabled:'eq.true'});
+    if(!rules.length) return;
+    const context=await ruleContext(unit);
+    for(const rule of rules){
+      try {await deliveryConfig(unit.id,rule.channel_id,rule.template_id)}catch{continue}
+      const matches=candidates({...context,rule});
+      // One recipient per rule on a pass also makes cooldown effective within the batch.
+      const rows=[];
+      for(const item of matches.slice(0,100)){
+        rows.push({channel_id:rule.channel_id,template_id:rule.template_id,contact_id:item.contact.id,rule_id:rule.id,
+          phone:item.contact.phone,kind:'automatic',idempotency_key:item.key,
+          payload:{mapping:rule.mapping,rule_armed_at:rule.armed_at,fields:await expand(context,item,rule),
+            appointment_id:item.event.appointment?.id}});
+      }
+      if(rows.length) await db.rpc('fs_enqueue',{p_unit:unit.id,p_rows:rows});
+    }
+  }
+  async function processJob() {
+    const job=await db.rpc('fs_claim');
+    if(!job) return false;
+    let outcome;
+    try {
+      const unit=await one('fs_units',{id:eq(job.unit_id),active:'eq.true'});
+      assert(unit,'Unidade desativada.');
+      const {channel,template}=await deliveryConfig(job.unit_id,job.channel_id,job.template_id);
+      const sender=await credential(job.unit_id,'sender:'+channel.id);
+      assert(sender,'Credencial de envio pendente.');
+      validateSender(sender,channel,unit.catalog_tenant);
+      if(job.kind!=='test'){
+        const contact=await one('fs_contacts',{id:eq(job.contact_id),unit_id:eq(job.unit_id)});
+        assert(contact?.consent&&contact.phone===job.phone,'O contato revogou a autorização ou mudou de telefone.');
+      }
+      if(job.rule_id){
+        const rule=await one('fs_rules',{id:eq(job.rule_id),unit_id:eq(job.unit_id)});
+        assert(rule?.enabled && Date.parse(rule.armed_at)===Date.parse(job.payload.rule_armed_at) && rule.channel_id===job.channel_id && rule.template_id===job.template_id &&
+          Date.parse(rule.armed_at)<=Date.parse(job.created_at),'A regra foi pausada ou alterada.');
+        if(job.payload.appointment_id){
+          const appointment=await one('fs_appointments',{id:eq(job.payload.appointment_id),unit_id:eq(job.unit_id)});
+          assert(appointment?.completed_at&&!appointment.canceled,'O atendimento deixou de estar concluído.');
+        }
+      }
+      const payload=messagePayload({
+        id:job.id,phone:job.phone,channel_type:channel.type,provider_template_id:template?.provider_id,
+        variable_keys:template?.variables,fields:job.payload.fields||{},
+        test_run:job.kind==='test',payload:{...job.payload,variable_mapping:job.payload.mapping,test_params:job.payload.params},
+      });
+      const result=await send(sender,payload);
+      outcome={status:result.status==='processing'?'accepted':result.status,external_id:result.externalId,
+        error:null,completed_at:new Date().toISOString()};
+    } catch(error) {
+      outcome=error instanceof ProviderError && error.ambiguous?
+        {status:'processing',error:'Resposta inconclusiva. Confira o protocolo no Clickmassa antes de repetir.'}:
+        {status:error instanceof AppError?'skipped':'failed',
+          error:error instanceof AppError||error instanceof ProviderError?error.message:'Confira os dados e os campos desta mensagem.'};
+    }
+    await db.update('fs_jobs',{id:eq(job.id),status:'eq.processing'},outcome);
+    return true;
+  }
+  let nextCatalog=0;
+  let nextSchedule=0;
+  async function tick() {
+    if(ticking) return;
+    ticking=true;
+    try {
+      await db.upsert('fs_runtime',{id:'app',version:'2',seen_at:new Date().toISOString()},'id');
+      const units=await db.select('fs_units',{active:'eq.true'});
+      if(Date.now()>nextCatalog){
+        nextCatalog=Date.now()+15*60000;
+        for(const unit of units) if(await credential(unit.id,'catalog')) launch(()=>synchronize(unit.id));
+      }
+      if(Date.now()>nextSchedule){
+        nextSchedule=Date.now()+60000;
+        for(const unit of units) await schedule(unit);
+      }
+      for(let i=0;i<10;i++) if(!await processJob()) break;
+      await db.remove('fs_sessions',{expires_at:'lt.'+new Date().toISOString()});
+    } finally {ticking=false}
+  }
+
+  async function route(user,method,path,input) {
+    const parts=path.split('/').filter(Boolean);
+    if(path==='/account/password' && method==='POST'){
+      const hash=await passwordHash(input.password);
+      await db.update('fs_users',{id:eq(user.id)},{password_hash:hash,must_change_password:false});
+      await db.remove('fs_sessions',{user_id:eq(user.id)});
+      return {loginAgain:true};
+    }
+    assert(!user.must_change_password,'Defina sua senha antes de continuar.',403);
+    if(path==='/units'&&method==='GET'){
+      if(user.master) return db.select('fs_units',{select:'id,name,slug,timezone,active,sync_state,synced_at',order:'name'});
+      const memberships=await db.select('fs_memberships',{user_id:eq(user.id)});
+      if(!memberships.length) return [];
+      return db.select('fs_units',{id:'in.('+memberships.map(m=>m.unit_id).join(',')+')',active:'eq.true',select:'id,name,slug,timezone,active',order:'name'});
+    }
+    if(path==='/units'&&method==='POST'){
+      master(user);
+      const name=text(input.name,120),slug=text(input.slug,100);
+      assert(name.length>=2&&/^[a-z0-9]+(-[a-z0-9]+)*$/.test(slug),'Preencha o nome e um identificador válido.');
+      const timezone=text(input.timezone,80)||'America/Sao_Paulo';
+      try{new Intl.DateTimeFormat('pt-BR',{timeZone:timezone}).format()}catch{throw new AppError('Fuso horário inválido.')}
+      return (await db.insert('fs_units',{name,slug,timezone}))[0];
+    }
+    assert(parts[0]==='units'&&parts[1],'Rota não encontrada.',404);
+    const id=uuid(parts[1]),action=parts[2]||'data';
+    const unit=await access(user,id,method!=='GET',action==='rules');
+    if(action==='data'&&method==='GET') return unitData(user,id);
+    if(action==='active'&&method==='POST'){
+      master(user);assert(typeof input.active==='boolean','Estado inválido.');
+      return db.update('fs_units',{id:eq(id)},{active:input.active});
+    }
+    if(action==='integration'&&method==='GET') return integration(user,id);
+    if(action==='catalog'&&method==='POST'){
+      master(user);
+      assert(!busy.has(id),'A sincronização já está em andamento.',409);
+      const previous=await credential(id,'catalog');
+      if(input.email || input.password){
+        const email=text(input.email,160).toLowerCase();
+        assert(/^[^@\s]+@[^@\s]+$/.test(email),'Informe o e-mail Clickmassa.');
+        assert(input.password || previous?.email===email,'Informe a senha da conta.');
+        await saveCredential(id,'catalog',{email,password:input.password||previous.password});
+      }
+      assert(await credential(id,'catalog'),'Cadastre a conta Clickmassa.');
+      await db.update('fs_units',{id:eq(id)},{sync_state:'pending',sync_error:null});
+      launch(()=>synchronize(id));
+      return {pending:true};
+    }
+    if(action==='sender'&&method==='POST'){
+      master(user);
+      const channel=await one('fs_channels',{id:eq(uuid(input.channel_id)),unit_id:eq(id)});
+      assert(channel,'Canal não encontrado.',404);
+      let sender=await credential(id,'sender:'+channel.id);
+      if(input.url || input.token){
+        const url=new URL(input.url);
+        const token=text(input.token,5000)||url.searchParams.get('token');
+        url.search='';
+        sender={url:senderEndpoint(url.href),token};
+        validateSender(sender,channel,unit.catalog_tenant);
+        await saveCredential(id,'sender:'+channel.id,sender);
+      }
+      assert(sender,'Informe a URL e o token do canal.');
+      await db.update('fs_channels',{id:eq(channel.id),unit_id:eq(id)},{configured:true,enabled:input.enabled===true});
+      return {saved:true};
+    }
+    if(action==='avec'&&method==='POST'){
+      master(user);
+      if(input.token) await saveCredential(id,'avec',{token:text(input.token,5000)});
+      assert(await credential(id,'avec'),'Informe o token AVEC.');
+      if(input.mapping){
+        const keys=Object.keys(unit.avec_sample?.[0]||{});
+        assert(keys.includes(input.mapping.name)&&keys.includes(input.mapping.phone),'Selecione os campos de nome e telefone.');
+        for(const key of ['email','birthday']) assert(!input.mapping[key]||keys.includes(input.mapping[key]),'Campo AVEC inválido.');
+        await db.update('fs_units',{id:eq(id)},{avec_mapping:input.mapping});
+      }
+      assert(!busy.has('avec:'+id),'A consulta AVEC está em andamento.',409);
+      await db.update('fs_units',{id:eq(id)},{avec_state:'pending',avec_error:null});
+      launch(()=>syncAvec(id));
+      return {pending:true};
+    }
+    if(action==='members'&&method==='GET'){
+      master(user);
+      return db.select('fs_memberships',{unit_id:eq(id),select:'id,role,fs_users(id,email,name,active)'});
+    }
+    if(action==='members'&&!parts[3]&&method==='POST'){
+      master(user);
+      const email=text(input.email,160).toLowerCase(),name=text(input.name,120);
+      assert(/^[^@\s]+@[^@\s]+$/.test(email)&&name.length>=2,'Preencha nome e e-mail.');
+      assert(['manager','operator','viewer'].includes(input.role),'Permissão inválida.');
+      let account=await one('fs_users',{email:eq(email)});
+      if(!account){
+        const hash=await passwordHash(input.password);
+        account=(await db.insert('fs_users',{email,name,password_hash:hash}))[0];
+      }
+      assert(!account.master,'Esta conta já tem acesso de administrador master.');
+      await db.upsert('fs_memberships',{unit_id:id,user_id:account.id,role:input.role},'unit_id,user_id');
+      return {saved:true};
+    }
+    if(action==='members'&&method==='DELETE'){
+      master(user);
+      await db.remove('fs_memberships',{unit_id:eq(id),id:eq(uuid(parts[3]))});
+      return {saved:true};
+    }
+    if(action==='members'&&parts[3]&&parts[4]==='password'&&method==='POST'){
+      master(user);
+      const membership=await one('fs_memberships',{id:eq(uuid(parts[3])),unit_id:eq(id)});
+      assert(membership,'Acesso não encontrado.',404);
+      await db.update('fs_users',{id:eq(membership.user_id),master:'eq.false'},{
+        password_hash:await passwordHash(input.password),must_change_password:true,
+      });
+      await db.remove('fs_sessions',{user_id:eq(membership.user_id)});
+      return {saved:true};
+    }
+    if(action==='contacts'&&method==='GET'){
+      const page=Math.max(0,Number(input.page)||0);
+      const params={unit_id:eq(id),order:'name,id',limit:26,offset:page*25};
+      if(input.eligible==='true')params.consent='eq.true';
+      const search=text(input.search,80).replace(/[^\p{L}\p{N}+ -]/gu,'');
+      if(search) params.or=`(name.ilike.*${search}*,phone.ilike.*${search}*)`;
+      return db.select('fs_contacts',params);
+    }
+    if(action==='contacts'&&method==='POST'){
+      const name=text(input.name,120);assert(name.length>=2,'Preencha o nome do contato.');
+      const record={name,phone:phone(input.phone),email:text(input.email,160)||null,
+        birthday:input.birthday||null,consent:input.consent===true};
+      if(record.birthday) assert(/^\d{4}-\d{2}-\d{2}$/.test(record.birthday)&&!Number.isNaN(Date.parse(record.birthday)),'Data de nascimento inválida.');
+      if(input.id) return db.update('fs_contacts',{unit_id:eq(id),id:eq(uuid(input.id))},record);
+      return db.insert('fs_contacts',{unit_id:id,...record});
+    }
+    if(action==='services'&&method==='POST'){
+      assert(unit.role==='master'||unit.role==='manager','Esta ação exige um gestor.',403);
+      const name=text(input.name,120),days=Number(input.return_days);
+      assert(name.length>=2&&(!days||(Number.isInteger(days)&&days>0&&days<=3650)),'Informe o nome e um intervalo válido.');
+      return db.insert('fs_services',{unit_id:id,name,return_days:days||null});
+    }
+    if(action==='appointments'&&method==='POST'){
+      const contact=await one('fs_contacts',{id:eq(uuid(input.contact_id)),unit_id:eq(id)});
+      const service=await one('fs_services',{id:eq(uuid(input.service_id)),unit_id:eq(id)});
+      const date=new Date(input.scheduled_at);
+      assert(contact&&service&&!Number.isNaN(date.getTime()),'Selecione cliente, serviço e data válidos.');
+      if(input.completed_at) assert(!Number.isNaN(Date.parse(input.completed_at))&&Date.parse(input.completed_at)<=Date.now(),'Conclusão deve ser uma data passada.');
+      return db.insert('fs_appointments',{unit_id:id,contact_id:contact.id,service_id:service.id,
+        scheduled_at:date.toISOString(),completed_at:input.completed_at||null,canceled:false});
+    }
+    if(action==='send'&&method==='POST'){
+      assert(unit.active,'A unidade está desativada.');
+      uuid(input.request_id);
+      const {channel,template}=await deliveryConfig(id,uuid(input.channel_id),input.template_id);
+      const test=input.kind==='test';
+      let recipients;
+      assert(input.confirm===true,'Confirme a autorização do destinatário.');
+      if(test) recipients=[{id:null,phone:phone(input.phone)}];
+      else{
+        assert(Array.isArray(input.contacts)&&input.contacts.length>=1&&input.contacts.length<=100,'Selecione até 100 contatos.');
+        const ids=[...new Set(input.contacts.map(uuid))];
+        recipients=await db.select('fs_contacts',{unit_id:eq(id),id:'in.('+ids.join(',')+')',consent:'eq.true'});
+        assert(recipients.length===ids.length,'Há contatos sem autorização na seleção.');
+      }
+      if(channel.type==='waba'){
+        if(test) assert(Array.isArray(input.params)&&input.params.length===template.variables.length&&
+          input.params.every(p=>typeof p==='string'&&p.trim()&&p.length<=1024),'Preencha todos os valores do modelo.');
+        else for(const key of template.variables) assert(fields.includes(input.mapping?.[key]),'Escolha a informação de cada campo do modelo.');
+      }else assert(text(input.body,4097)&&input.body.length<=4096,'Preencha uma mensagem com até 4.096 caracteres.');
+      assert(!input.note||typeof input.note==='string'&&input.note.length<=1000,'A nota interna pode ter até 1.000 caracteres.');
+      const rows=recipients.map(c=>({
+        channel_id:channel.id,template_id:template?.id||null,contact_id:c.id,phone:c.phone,kind:test?'test':'manual',
+        idempotency_key:`send:${user.id}:${input.request_id}:${c.id||'test'}`,
+        payload:channel.type==='waba'?{params:input.params,mapping:input.mapping,fields:{
+          'customer.name':c.name,'customer.phone':c.phone,'customer.email':c.email,'customer.birthday':c.birthday,'establishment.name':unit.name,
+        }}:{body:input.body,note:input.note},
+      }));
+      const added=await db.rpc('fs_enqueue',{p_unit:id,p_rows:rows});
+      launch(tick);
+      return {queued:added};
+    }
+    if(action==='rules'&&method==='POST'){
+      const enabled=input.enabled===true;
+      const {channel,template}=await deliveryConfig(id,uuid(input.channel_id),input.template_id);
+      assert(channel.type==='waba','As rotinas usam modelos do WhatsApp Oficial.');
+      assert(ruleTypes.includes(input.type),'Tipo de rotina inválido.');
+      const values={unit_id:id,name:text(input.name,120),type:input.type,channel_id:channel.id,template_id:template.id,
+        delay_days:Number(input.delay_days),cooldown_days:Number(input.cooldown_days),send_time:input.send_time,
+        service_id:input.service_id||null,target_service_id:input.target_service_id||null,mapping:input.mapping||{},enabled,
+        armed_at:enabled?new Date().toISOString():null};
+      assert(values.name&&/^([01]\d|2[0-3]):[0-5]\d$/.test(values.send_time),'Preencha nome e horário.');
+      for(const n of [values.delay_days,values.cooldown_days]) assert(Number.isInteger(n)&&n>=0&&n<=3650,'Intervalo inválido.');
+      if(values.type==='cross_sell') assert(values.target_service_id,'Selecione o serviço recomendado.');
+      for(const serviceId of [values.service_id,values.target_service_id]) if(serviceId) assert(await one('fs_services',{unit_id:eq(id),id:eq(uuid(serviceId))}),'Serviço inválido.');
+      for(const key of template.variables) assert(fields.includes(values.mapping[key]),'Preencha todos os campos do modelo.');
+      if(input.id) return db.update('fs_rules',{id:eq(uuid(input.id)),unit_id:eq(id)},values);
+      return db.insert('fs_rules',values);
+    }
+    if(action==='rules'&&method==='DELETE'){
+      await db.update('fs_rules',{unit_id:eq(id),id:eq(uuid(parts[3]))},{enabled:false,armed_at:null});
+      return {saved:true};
+    }
+    if(action==='simulate'&&method==='POST'){
+      assert(unit.role==='master'||unit.role==='manager','Esta ação exige um gestor.',403);
+      const rule=await one('fs_rules',{unit_id:eq(id),id:eq(uuid(input.rule_id))});
+      assert(rule,'Regra não encontrada.',404);
+      await deliveryConfig(id,rule.channel_id,rule.template_id);
+      const context=await ruleContext(unit);
+      const matches=candidates({...context,rule,preview:true});
+      return {count:matches.length,names:matches.slice(0,10).map(x=>x.contact.name)};
+    }
+    throw new AppError('Rota não encontrada.',404);
+  }
+  return {route,tick,access};
+}

@@ -1,4 +1,4 @@
-/** Cliente de relatórios AVEC para uso SOMENTE no servidor/n8n. */
+/** Cliente de relatórios AVEC usado exclusivamente pelo servidor FlowSuite. */
 export const AVEC_BASE_URL = 'https://api.avec.beauty';
 const REPORT_CODE = /^[A-Z0-9]{4}$/;
 const DATE = /^\d{2}\/\d{2}\/\d{4}$/;
