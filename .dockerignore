@@ -8,3 +8,4 @@ config.example.js
 n8n
 integrations
 tests
+worker

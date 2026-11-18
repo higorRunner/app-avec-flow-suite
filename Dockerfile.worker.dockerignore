@@ -1,0 +1,6 @@
+**
+!Dockerfile.worker
+!worker/
+!worker/*.mjs
+!integrations/
+!integrations/avec-client.mjs

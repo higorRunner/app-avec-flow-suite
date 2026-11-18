@@ -1,4 +1,6 @@
-# Contrato para os workflows n8n
+# Referência histórica da integração n8n
+
+O FlowSuite atual usa o seu próprio serviço de processamento. As instruções de instalação estão no [README](../README.md). Este arquivo registra a proposta anterior de contratos para n8n.
 
 O painel **não chama diretamente APIs do AVEC/Clickmassa** e **não contém service_role**.
 Os dados retornados das APIs devem ser sincronizados pelo n8n com as tabelas Supabase.

@@ -1,4 +1,4 @@
-﻿"""Teste de interface com navegador real e Supabase simulado."""
+"""Teste de interface com navegador real e Supabase simulado."""
 import os
 import re
 from pathlib import Path
@@ -31,8 +31,8 @@ window.supabase={createClient:()=>({
    if(table==='establishments') data=[{id:'e1',name:'Ambiente de teste',slug:'teste',active:true,timezone:'America/Sao_Paulo'}];
    if(table==='memberships') data=[{establishment_id:'e1',role}];
    if(table==='integration_status') data={establishment_id:'e1',avec_configured:false,clickmassa_configured:false};
-   if(table==='channels') data=[{id:'c1',name:'WhatsApp principal',type:'whatsapp',active:true}];
-   if(table==='templates') data=[{id:'t1',name:'Boas-vindas',status:'active',body:'Olá, {{1}}!',variables:[{key:'1',label:'Primeiro nome'}]}];
+   if(table==='channels') data=[{id:'c1',name:'WhatsApp principal',type:'waba',active:true,dispatch_ready:true},{id:'c2',name:'Atendimento QR',type:'whatsapp',active:true,dispatch_ready:true}];
+   if(table==='templates') data=[{id:'t1',name:'Boas-vindas',status:'active',clickmassa_channel_id:'c1',body:'Olá, {{1}}!',variables:[{key:'1',label:'Primeiro nome'}]}];
    if(table==='services') data=[{id:'s1',name:'Corte',active:true}];
    if(table==='customers'){
     data=customers.filter(c=>(!filters.id||c.id===filters.id)&&(!search||c.name.includes(search)||c.phone.includes(search)));
@@ -156,6 +156,19 @@ with sync_playwright() as p:
     jobs = page.evaluate("window.testCalls.jobs[0]")
     assert len(jobs) == 1 and jobs[0]["customer_id"] == "person-1", jobs
     assert jobs[0]["payload"]["variable_mapping"] == {"1":"customer.name"}
+
+    navigate(page,"Envio manual",mobile=True)
+    page.get_by_label("Canal",exact=True).select_option("c2")
+    expect(page.get_by_label("Modelo de mensagem")).to_be_hidden()
+    page.get_by_label("Mensagem",exact=True).fill("Olá, contato de teste")
+    page.get_by_label("Nota interna (opcional)").fill("Apenas equipe")
+    page.get_by_role("checkbox",name=re.compile("Cliente 01")).check()
+    page.get_by_role("checkbox",name="Confirmo que os destinatários autorizaram este envio.").check()
+    page.get_by_role("button",name="Adicionar à fila").click()
+    expect(page.get_by_role("heading",name="Relatórios de envios")).to_be_visible()
+    qr = page.evaluate("window.testCalls.jobs[1][0]")
+    assert qr["template_id"] is None and qr["payload"]["transport"] == "clickmassa"
+    assert qr["payload"]["body"] == "Olá, contato de teste" and qr["payload"]["note"] == "Apenas equipe"
 
     navigate(page,"Clientes e histórico",mobile=True)
     page.get_by_label("Buscar por nome ou telefone").fill("Cliente 30")

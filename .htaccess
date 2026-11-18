@@ -1,7 +1,7 @@
 Options -Indexes
 DirectoryIndex index.html
 RewriteEngine On
-RewriteRule ^(?:sql|docs|integrations|n8n|tests)(?:/|$) - [F,L,NC]
+RewriteRule ^(?:sql|docs|integrations|n8n|tests|worker)(?:/|$) - [F,L,NC]
 RewriteRule (^|/)\.(?!well-known(?:/|$)) - [F,L]
 RewriteRule ^e/[a-z0-9-]+/?$ index.html [L]
 <IfModule mod_headers.c>
@@ -14,6 +14,6 @@ Header always set Content-Security-Policy "default-src 'none'; base-uri 'self'; 
 Header always set Cache-Control "no-cache"
 </FilesMatch>
 </IfModule>
-<FilesMatch "^(config\.example\.js|Dockerfile|nginx\.conf|.*\.(sql|md))$">
+<FilesMatch "^(config\.example\.js|Dockerfile(?:\..*)?|nginx\.conf|.*\.(sql|md))$">
 Require all denied
 </FilesMatch>
