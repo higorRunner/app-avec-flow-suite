@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { assert, AppError, text, phone, uuid, passwordHash } from './security.mjs';
 import { readCatalog, senderEndpoint, messagePayload, sendMessage, ProviderError } from './providers/clickmassa.mjs';
-import { fetchReportAll } from './providers/avec.mjs';
+import { fetchReportAll, AvecError } from './providers/avec.mjs';
 import { candidates, ruleTypes } from './routines.mjs';
 
 const eq = value => 'eq.' + value;
@@ -94,8 +94,9 @@ export function application({ db, secrets, catalog = readCatalog, send = sendMes
       const unit=await one('fs_units',{id:eq(id)});
       if(unit.avec_mapping?.name) await importContacts(unit,result.result);
       await event(id,'avec','ok',`${result.records} registros consultados. ${unit.avec_mapping?.name?'Clientes importados.':'Configure os campos para importar os clientes.'}`);
-    } catch {
-      const detail='Não foi possível consultar o relatório de clientes AVEC. Confira o token e o acesso ao relatório 0004.';
+    } catch(error) {
+      const detail=error instanceof AvecError||error instanceof AppError?error.message:
+        'Não foi possível concluir a consulta ou importação AVEC. Confira os campos de importação.';
       await db.update('fs_units',{id:eq(id)},{avec_state:'error',avec_error:detail});
       await event(id,'avec','error',detail);
     } finally {busy.delete(key)}

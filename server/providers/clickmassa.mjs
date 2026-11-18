@@ -3,8 +3,14 @@ const channelId = /^[1-9]\d*$/;
 const uuidPath = /^\/v1\/api\/external\/[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\/?$/i;
 
 export class ProviderError extends Error {
-  constructor(operation, status, ambiguous = false) {
-    super(`Clickmassa: ${operation} (${status || 'resposta inconclusiva'}).`);
+  constructor(operation, status, ambiguous = false, reason = '') {
+    const descriptions = {
+      400: 'A API recusou os dados da solicitação.',
+      401: 'A API recusou a credencial usada nesta etapa.',
+      403: 'A API negou acesso a esta operação.',
+      429: 'O limite de chamadas foi atingido. Aguarde antes de tentar novamente.',
+    };
+    super(`Clickmassa: ${operation}${status ? ' (HTTP '+status+')' : ''}. ${reason || descriptions[status] || (status >= 500 ? 'O serviço do fornecedor está indisponível.' : 'A resposta não pôde ser confirmada.')}`);
     this.status = status;
     this.ambiguous = ambiguous;
   }
@@ -21,7 +27,11 @@ export function senderEndpoint(value) {
 }
 
 async function call(url, { operation, token, body, fetchImpl = fetch }) {
-  const headers = { Accept: 'application/json' };
+  const headers = {
+    Accept: 'application/json',
+    Origin: 'https://cs.clickmassa.com.br',
+    Referer: 'https://cs.clickmassa.com.br/',
+  };
   if (token) headers.Authorization = `Bearer ${token}`;
   if (body) headers['Content-Type'] = 'application/json';
   let response;
@@ -31,7 +41,7 @@ async function call(url, { operation, token, body, fetchImpl = fetch }) {
       signal: AbortSignal.timeout(20000), redirect: 'error',
     });
   } catch {
-    throw new ProviderError(operation, null, true);
+    throw new ProviderError(operation, null, true, 'Falha de conexão ou tempo limite ao acessar a API.');
   }
   if (!response.ok) {
     throw new ProviderError(operation, response.status, response.status >= 500 || [408, 409, 429].includes(response.status));
@@ -39,14 +49,14 @@ async function call(url, { operation, token, body, fetchImpl = fetch }) {
   try {
     return await response.json();
   } catch {
-    throw new ProviderError(operation, null, true);
+    throw new ProviderError(operation, response.status, true, 'A API retornou conteúdo em formato diferente de JSON.');
   }
 }
 
 function normalizeTemplate(item, channel) {
   if (String(item.whatsappId) !== channel || !channelId.test(String(item.id)) ||
       !channelId.test(String(item.hsmId)) || typeof item.name !== 'string' || !Array.isArray(item.components)) {
-    throw new Error('Modelo Clickmassa fora do formato observado ou vinculado a outro canal.');
+    throw new ProviderError('ler modelo', null, false, 'O modelo tem estrutura diferente da captura ou pertence a outro canal.');
   }
   const body = item.components.find(x => x.type === 'BODY')?.text;
   const allTokens = typeof body === 'string' ? [...body.matchAll(/\{\{\s*([^{}]+?)\s*\}\}/g)] : [];
@@ -74,32 +84,35 @@ export async function readCatalog({ email, password, tenantId, fetchImpl = fetch
   const login = await call(`${origin}/auth/login/`, {
     operation: 'autenticação do catálogo', body: { email, password, captchaToken: '' }, fetchImpl,
   });
-  if (!/^[1-9]\d*$/.test(String(login?.tenantId)) || (tenantId && String(login.tenantId) !== String(tenantId)) || typeof login?.token !== 'string' || !login.token) {
-    throw new Error('O login Clickmassa não confirmou o tenant ou não retornou uma sessão de catálogo.');
+  if (tenantId && String(login?.tenantId) !== String(tenantId)) {
+    throw new ProviderError('validar empresa', null, false, 'O login retornou uma empresa diferente da vinculada à unidade.');
+  }
+  if (!/^[1-9]\d*$/.test(String(login?.tenantId)) || typeof login?.token !== 'string' || !login.token) {
+    throw new ProviderError('interpretar login', null, false, 'O login não retornou tenantId e token no formato capturado.');
   }
   tenantId = String(login.tenantId);
   const token = login.token;
   const response = await call(`${origin}/whatsapp/?hideInactive=true`, { operation: 'listar canais', token, fetchImpl });
-  if (!Array.isArray(response)) throw new Error('Lista de canais Clickmassa fora do formato observado.');
+  if (!Array.isArray(response)) throw new ProviderError('interpretar canais',null,false,'A lista de canais tem formato diferente da captura.');
   const channels = [];
   const templates = new Map();
   for (const item of response) {
-    if (String(item.tenantId) !== String(tenantId)) throw new Error('O catálogo retornou um canal de outro tenant.');
+    if (String(item.tenantId) !== String(tenantId)) throw new ProviderError('validar canais',null,false,'O catálogo retornou um canal de outra empresa.');
     if (!['waba', 'whatsapp'].includes(item.type)) continue;
     const id = String(item.id);
-    if (!channelId.test(id) || typeof item.name !== 'string') throw new Error('Identificador de canal inválido.');
+    if (!channelId.test(id) || typeof item.name !== 'string') throw new ProviderError('interpretar canais',null,false,'O canal retornou um identificador ou nome inválido.');
     const active = item.isActive === true && item.isDeleted !== true && item.status === 'CONNECTED';
     channels.push({ external_id: id, name: item.name, type: item.type, active });
     if (item.type !== 'waba') continue;
     for (let page = 1; ; page++) {
-      if (page > 100) throw new Error('O catálogo Clickmassa ultrapassou o limite de páginas.');
+      if (page > 100) throw new ProviderError('listar modelos',null,false,'O catálogo ultrapassou o limite de 100 páginas.');
       const query = new URLSearchParams({ pageNumber: String(page), search: '', status: 'APPROVED', whatsappId: id });
       const result = await call(`${origin}/templates?${query}`, { operation: 'listar modelos', token, fetchImpl });
       if (!Array.isArray(result?.templates) || typeof result.hasMore !== 'boolean' || (result.hasMore && !result.templates.length)) {
-        throw new Error('Paginação de modelos Clickmassa fora do formato observado.');
+        throw new ProviderError('interpretar modelos',null,false,'A paginação de modelos tem formato diferente da captura.');
       }
       for (const item of result.templates) {
-        if (String(item.tenantId) !== String(tenantId)) throw new Error('O catálogo retornou um modelo de outro tenant.');
+        if (String(item.tenantId) !== String(tenantId)) throw new ProviderError('validar modelos',null,false,'O catálogo retornou um modelo de outra empresa.');
         if (item.status !== 'APPROVED' || item.deletedAt) continue;
         const template = normalizeTemplate(item, id);
         templates.set(template.external_id, template);

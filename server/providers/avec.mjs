@@ -5,6 +5,13 @@ const DATE = /^\d{2}\/\d{2}\/\d{4}$/;
 const MAX_PAGES = 100;
 const BLOCKED = new Set(['token','authorization','apikey','api_key']);
 
+export class AvecError extends Error {
+  constructor(stage, message, status = null) {
+    super(`AVEC: ${stage}${status ? ' (HTTP '+status+')' : ''}. ${message}`);
+    this.status = status;
+  }
+}
+
 export function formatAvecDate(value) {
   if (!(value instanceof Date) || Number.isNaN(value.getTime())) throw new Error('Data inválida');
   const dd = String(value.getUTCDate()).padStart(2,'0');
@@ -42,7 +49,7 @@ function hasMore(json){
   if(typeof v==='boolean')return v;
   if(v===1 || v==='1' || v==='true' || v==='TRUE')return true;
   if(v===0 || v==='0' || v==='false' || v==='FALSE')return false;
-  throw new Error('Resposta AVEC sem HasMore reconhecido: valide contrato real antes de processar');
+  throw new AvecError('ler paginação','A API retornou dados sem HasMore reconhecido. É necessário validar o formato da resposta.');
 }
 export async function fetchReportPage({code,token,params={},fetchImpl=fetch,timeoutMs=20000,baseUrl=AVEC_BASE_URL}){
   if(typeof token!=='string'||!token.trim())throw new Error('Token AVEC não informado');
@@ -50,12 +57,27 @@ export async function fetchReportPage({code,token,params={},fetchImpl=fetch,time
   const controller=new AbortController();
   const timer=setTimeout(()=>controller.abort(),timeoutMs);
   try{
-    const response=await fetchImpl(url,{method:'GET',headers:{Authorization:token,'Content-Type':'application/json','Accept':'application/json'},signal:controller.signal,redirect:'error'});
-    if(!response.ok)throw new Error(`Falha HTTP AVEC ${response.status} no relatório ${code}`);
-    const json=await response.json();
-    if(!json||typeof json!=='object'||Array.isArray(json))throw new Error('Resposta JSON inesperada');
+    let response;
+    try {
+      response=await fetchImpl(url,{method:'GET',headers:{Authorization:token,'Content-Type':'application/json','Accept':'application/json'},signal:controller.signal,redirect:'error'});
+    } catch {
+      throw new AvecError('conectar','Falha de conexão ou tempo limite ao acessar a API.');
+    }
+    if(!response.ok){
+      const descriptions={
+        401:'A API recusou o token informado.',
+        403:'A API negou o acesso ao relatório desta unidade.',
+        404:'O relatório não foi encontrado nesta rota.',
+        429:'O limite de chamadas foi atingido. Aguarde antes de tentar novamente.',
+      };
+      throw new AvecError('consultar relatório '+code,descriptions[response.status]||'A API recusou a consulta.',response.status);
+    }
+    let json;
+    try { json=await response.json(); }
+    catch { throw new AvecError('ler resposta','A API respondeu com conteúdo diferente de JSON.',response.status); }
+    if(!json||typeof json!=='object'||Array.isArray(json))throw new AvecError('ler resposta','A estrutura JSON é diferente da coleção de relatórios.');
     const result=findData(json);
-    if(!result)throw new Error('Resposta sem Result reconhecido: valide exemplo real');
+    if(!result)throw new AvecError('ler registros','O campo Result não foi reconhecido. É necessário validar a estrutura de resposta da API.');
     return {result,hasMore:hasMore(json),raw:json};
   }finally{clearTimeout(timer)}
 }
@@ -67,6 +89,6 @@ export async function fetchReportAll({code,token,params={},fetchImpl=fetch,maxPa
     const res=await fetchReportPage({code,token,params:{...params,page},fetchImpl,timeoutMs});
     results.push(...res.result);pages++;more=res.hasMore;
   }
-  if(more)throw new Error(`Relatório ${code} excedeu ${maxPages} páginas; resultado parcial descartado`);
+  if(more)throw new AvecError('paginar relatório '+code,`O relatório ultrapassou ${maxPages} páginas. A importação foi interrompida.`);
   return {code,pages,records:results.length,result:results};
 }

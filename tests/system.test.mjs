@@ -5,6 +5,24 @@ import { fixture } from './support.mjs';
 import { candidates } from '../server/routines.mjs';
 import { passwordHash, passwordMatches, secretBox } from '../server/security.mjs';
 import { createAppServer } from '../server/main.mjs';
+import { fetchReportPage, AvecError } from '../server/providers/avec.mjs';
+import { readCatalog, ProviderError } from '../server/providers/clickmassa.mjs';
+
+test('integration failures identify HTTP status without exposing credentials or response bodies',async()=>{
+  const secret='private-test-credential';
+  await assert.rejects(fetchReportPage({code:'0004',token:secret,fetchImpl:async()=>{
+    return new Response('response contains '+secret,{status:401});
+  }}),error=>error instanceof AvecError&&error.status===401&&error.message.includes('token')&&!error.message.includes(secret));
+  await assert.rejects(fetchReportPage({code:'0004',token:secret,fetchImpl:async()=>{
+    return Response.json({Result:[]});
+  }}),error=>error instanceof AvecError&&error.status===null&&error.message.includes('HasMore'));
+  await assert.rejects(readCatalog({email:'user@example.test',password:secret,fetchImpl:async(url,options)=>{
+    assert.equal(options.headers.Origin,'https://cs.clickmassa.com.br');
+    assert.equal(options.headers.Referer,'https://cs.clickmassa.com.br/');
+    assert.deepEqual(JSON.parse(options.body),{email:'user@example.test',password:secret,captchaToken:''});
+    return new Response('response contains '+secret,{status:401});
+  }}),error=>error instanceof ProviderError&&error.status===401&&error.message.includes('autenticação')&&!error.message.includes(secret));
+});
 
 test('schema reset is repeatable and browser roles cannot read application data',async()=>{
   const f=await fixture();
