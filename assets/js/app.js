@@ -40,7 +40,10 @@ async function loadAvecCatalog() {
  if (state.avecStatus === 'loading' || state.avecStatus === 'ready') return;
  state.avecStatus = 'loading';
  try {
-  const response = await fetch(new URL('assets/data/avec-reports.json', assetBase));
+  const catalogUrl = new URL('assets/data/avec-reports.json', assetBase);
+  const assetVersion = document.querySelector('meta[name="flowsuite-asset-version"]')?.content;
+  if (assetVersion && assetVersion !== 'local') catalogUrl.searchParams.set('v', assetVersion);
+  const response = await fetch(catalogUrl);
   if (!response.ok) throw Error('Catálogo indisponível');
   const catalog = await response.json();
   if (!Array.isArray(catalog.reports)) throw Error('Catálogo inválido');

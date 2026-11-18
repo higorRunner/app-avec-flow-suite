@@ -84,6 +84,11 @@ def fulfill(route):
     if file.suffix == ".html":
         nginx = (ROOT / "nginx.conf").read_text(encoding="utf-8")
         headers["Content-Security-Policy"] = re.search(r'Content-Security-Policy "([^"]+)"', nginx)[1]
+        html = file.read_text(encoding="utf-8").replace("v=local", "v=smoke-build").replace(
+            'name="flowsuite-asset-version" content="local"',
+            'name="flowsuite-asset-version" content="smoke-build"',
+        )
+        return route.fulfill(body=html, content_type=mime[file.suffix], headers=headers)
     return route.fulfill(body=file.read_bytes(), content_type=mime[file.suffix], headers=headers)
 
 
@@ -102,10 +107,12 @@ with sync_playwright() as p:
     errors = []
     page.on("pageerror",lambda error: errors.append(str(error)))
     page.route("**/*",fulfill)
-    page.goto(BASE+"/e/teste")
+    with page.expect_request("**/assets/js/app.js?v=smoke-build"):
+        page.goto(BASE+"/e/teste")
     expect(page.get_by_role("heading",name="Visão geral")).to_be_visible()
 
-    navigate(page,"Relatórios AVEC")
+    with page.expect_request("**/assets/data/avec-reports.json?v=smoke-build"):
+        navigate(page,"Relatórios AVEC")
     expect(page.get_by_role("heading",name="Catálogo de relatórios (230)")).to_be_visible()
     page.get_by_label("Pesquisar por código ou assunto").fill("0107")
     page.locator(".avec-report-list").get_by_role("button",name=re.compile("0107")).click()

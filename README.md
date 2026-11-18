@@ -28,6 +28,8 @@ Acesse `http://localhost:8080`. O painel usa o Supabase definido em `config.js`.
 3. Para testar integrações, importe os workflows da pasta `n8n/` em **Workflows → Import from File**. Configure a conexão PostgreSQL e o estabelecimento no próprio n8n. Esses workflows são de diagnóstico e chegam desativados.
 4. Valide permissões, dados e fluxos em homologação antes de publicar a imagem no EasyPanel.
 
+Após publicar pelo Dockerfile, abra `/version.txt` no domínio do serviço para conferir o SHA da implantação e a versão dos arquivos estáticos. No EasyPanel, confirme que a fonte aponta para o repositório `higorRunner/app-avec-flow-suite`, branch `main`, Build Path `/` e builder `Dockerfile`. A versão dos arquivos muda junto com o CSS, o JavaScript e o catálogo para que o navegador carregue a edição nova.
+
 ## Testes
 
 ```powershell
