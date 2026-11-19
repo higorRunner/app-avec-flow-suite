@@ -713,7 +713,7 @@ async function action(name,btn){
     case 'simulate': {
       const result=await api(unitPath('simulate'),'POST',{rule_id:id});
       openDialog('Simulação da rotina',`<div class="stack"><p class="alert"><strong>${result.count} cliente(s) elegíveis neste momento.</strong></p>
-       <p class="hint">Revise os clientes abaixo. Simular não envia nada; somente o botão de envio confirmado adiciona os selecionados à fila.</p>
+       <p class="hint">A elegibilidade usa a conclusão confirmada do atendimento no AVEC mais o intervalo configurado. Simular não envia nada; somente o botão de envio confirmado adiciona os selecionados à fila.</p>
        ${result.items.length?`<div class="simulation-list" role="group" aria-label="Clientes elegíveis">
         <label class="check simulation-all"><input type="checkbox" data-simulation-all checked> Selecionar todos os ${result.items.length} exibidos</label>
         ${result.items.map(item=>`<label class="check simulation-item"><input type="checkbox" data-simulation-contact value="${h(item.id)}" checked>

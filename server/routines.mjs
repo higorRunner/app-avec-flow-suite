@@ -19,7 +19,10 @@ export function candidates({ unit, rule, contacts, appointments, services, jobs,
   if (!ruleTypes.includes(rule.type) || (!preview && (!rule.enabled || !rule.armed_at))) return [];
   const today = localDay(now,unit.timezone);
   if (today.time < rule.send_time.slice(0,5)) return [];
-  const armedDay=!preview?localDay(new Date(rule.armed_at),unit.timezone).day:null;
+  // A paused/new rule is simulated as if it were activated today. An active
+  // rule keeps its real activation day so the preview also shows legitimate
+  // catch-up work accumulated since activation.
+  const armedDay=rule.armed_at?localDay(new Date(rule.armed_at),unit.timezone).day:today.day;
   const relevant = appointments.filter(a=>!a.canceled);
   const due = [];
   for (const contact of contacts) {
@@ -49,7 +52,7 @@ export function candidates({ unit, rule, contacts, appointments, services, jobs,
           if(['return','cross_sell'].includes(rule.type))return day<=today.day;
           // Catch up a missed run after downtime, while avoiding old CSAT/post
           // messages whose due date predates activation of this rule.
-          return day<=today.day&&(preview||day>=armedDay);
+          return day<=today.day&&day>=armedDay;
         });
         if (!appointment) continue;
         if (rule.type==='return' && history.some(a=>a.service_id===appointment.service_id &&

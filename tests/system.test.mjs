@@ -272,6 +272,11 @@ test('rules respect time zone, consent, future bookings and idempotency',()=>{
   assert.equal(candidates({...context,rule,contacts:[{id:'c',consent:false}]}).length,0);
   assert.equal(candidates({...context,rule,contacts:[{id:'c',consent:true,phone:null}]}).length,0);
   assert.equal(candidates({...context,rule,jobs:[{idempotency_key:'rule:r:c:a'}]}).length,0);
+  const yesterday={...context,appointments:[{id:'y',contact_id:'c',service_id:'s',completed_at:'2026-11-17T13:00:00Z'}]};
+  assert.equal(candidates({...yesterday,rule:{...rule,delay_days:1}}).length,1,
+    'A paused simulation includes a completion whose configured delay ends today');
+  assert.equal(candidates({...yesterday,rule:{...rule,delay_days:2}}).length,0,
+    'Changing the delay changes the simulated completion date');
   assert.equal(candidates({...context,rule:{...rule,type:'birthday'}}).length,1);
   assert.equal(candidates({...context,rule:{...rule,type:'cross_sell',target_service_id:'target'}}).length,1);
   assert.equal(candidates({...context,rule:{...rule,type:'birthday'},contacts:[{id:'c',consent:true,phone:'+5511999990000',birthday_month_day:'11-18'}]}).length,1);
