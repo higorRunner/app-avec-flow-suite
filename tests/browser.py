@@ -33,6 +33,7 @@ with sync_playwright() as p:
     expect(page.get_by_label("Identificador do link")).to_have_value("unidade-de-teste")
     page.get_by_role("button", name="Criar unidade").click()
     page.get_by_role("button", name="Integrações", exact=True).click()
+    page.get_by_label("URL base da API Clickmassa").fill("https://api.custom.test")
     page.get_by_label("E-mail Clickmassa").fill("test@example.test")
     page.get_by_label("Senha Clickmassa").fill("fake-provider-password")
     page.get_by_role("button", name="Salvar e importar catálogo").click()
@@ -42,7 +43,7 @@ with sync_playwright() as p:
         "tenantId": 10, "sessionId": 1, "channelType": "waba", "exp": int(time.time())+3600
     }).encode()).decode().rstrip("=")
     page.get_by_label("URL de envio", exact=True).fill(
-        "https://suporteapi.clickmassa.com.br/v1/api/external/00000000-0000-0000-0000-000000000001"
+        "https://api.custom.test/v1/api/external/00000000-0000-0000-0000-000000000001"
     )
     page.get_by_label("Token de envio (quando separado da URL)").fill("fake."+claims+".signature")
     page.get_by_label("Liberar envios neste canal").check()

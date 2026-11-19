@@ -1,6 +1,5 @@
-const origin = 'https://suporteapi.clickmassa.com.br';
+import { apiBase, apiEndpoint, externalEndpoint, publicFetch, DEFAULT_API_BASE } from './http.mjs';
 const channelId = /^[1-9]\d*$/;
-const uuidPath = /^\/v1\/api\/external\/[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\/?$/i;
 
 export class ProviderError extends Error {
   constructor(operation, status, ambiguous = false, reason = '') {
@@ -16,17 +15,9 @@ export class ProviderError extends Error {
   }
 }
 
-export function senderEndpoint(value) {
-  const url = new URL(value);
-  if (url.origin !== origin || url.username || url.password || url.hash || !uuidPath.test(url.pathname)) {
-    throw new Error('URL de envio Clickmassa inválida.');
-  }
-  const keys = [...url.searchParams.keys()];
-  if (keys.length) throw new Error('Informe a URL de envio sem parâmetros e o token no campo separado.');
-  return url.href;
-}
+export const senderEndpoint = externalEndpoint;
 
-async function call(url, { operation, token, body, fetchImpl = fetch }) {
+async function call(url, { operation, token, body, fetchImpl = publicFetch }) {
   const headers = {
     Accept: 'application/json',
     Origin: 'https://cs.clickmassa.com.br',
@@ -80,8 +71,9 @@ function normalizeTemplate(item, channel) {
   };
 }
 
-export async function readCatalog({ email, password, tenantId, fetchImpl = fetch }) {
-  const login = await call(`${origin}/auth/login/`, {
+export async function readCatalog({ email, password, tenantId, baseUrl = DEFAULT_API_BASE, fetchImpl = publicFetch }) {
+  const base = apiBase(baseUrl);
+  const login = await call(apiEndpoint(base,'auth/login/'), {
     operation: 'autenticação do catálogo', body: { email, password, captchaToken: '' }, fetchImpl,
   });
   if (tenantId && String(login?.tenantId) !== String(tenantId)) {
@@ -92,7 +84,7 @@ export async function readCatalog({ email, password, tenantId, fetchImpl = fetch
   }
   tenantId = String(login.tenantId);
   const token = login.token;
-  const response = await call(`${origin}/whatsapp/?hideInactive=true`, { operation: 'listar canais', token, fetchImpl });
+  const response = await call(apiEndpoint(base,'whatsapp/?hideInactive=true'), { operation: 'listar canais', token, fetchImpl });
   if (!Array.isArray(response)) throw new ProviderError('interpretar canais',null,false,'A lista de canais tem formato diferente da captura.');
   const channels = [];
   const templates = new Map();
@@ -107,7 +99,7 @@ export async function readCatalog({ email, password, tenantId, fetchImpl = fetch
     for (let page = 1; ; page++) {
       if (page > 100) throw new ProviderError('listar modelos',null,false,'O catálogo ultrapassou o limite de 100 páginas.');
       const query = new URLSearchParams({ pageNumber: String(page), search: '', status: 'APPROVED', whatsappId: id });
-      const result = await call(`${origin}/templates?${query}`, { operation: 'listar modelos', token, fetchImpl });
+      const result = await call(apiEndpoint(base,'templates?'+query), { operation: 'listar modelos', token, fetchImpl });
       if (!Array.isArray(result?.templates) || typeof result.hasMore !== 'boolean' || (result.hasMore && !result.templates.length)) {
         throw new ProviderError('interpretar modelos',null,false,'A paginação de modelos tem formato diferente da captura.');
       }
@@ -159,8 +151,8 @@ export function messagePayload(job) {
   return { ...common, templateId: job.provider_template_id, params };
 }
 
-export async function sendMessage({ url, token }, body, fetchImpl = fetch) {
-  const result = await call(senderEndpoint(url), { operation: 'enviar mensagem', token, body, fetchImpl });
+export async function sendMessage({ url, token, baseUrl = DEFAULT_API_BASE }, body, fetchImpl = publicFetch) {
+  const result = await call(senderEndpoint(url,baseUrl), { operation: 'enviar mensagem', token, body, fetchImpl });
   if (typeof result?.message?.id !== 'string' || !result.message.id.trim()) {
     throw new ProviderError('envio sem confirmação de recebimento', null, true);
   }

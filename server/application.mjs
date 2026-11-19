@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { assert, AppError, text, phone, uuid, passwordHash } from './security.mjs';
 import { readCatalog, senderEndpoint, messagePayload, sendMessage, ProviderError } from './providers/clickmassa.mjs';
+import { apiBase, DEFAULT_API_BASE } from './providers/http.mjs';
 import { fetchReportAll, AvecError } from './providers/avec.mjs';
 import { candidates, ruleTypes } from './routines.mjs';
 
@@ -56,7 +57,7 @@ export function application({ db, secrets, catalog = readCatalog, send = sendMes
     const unit=await access(user,id);
     const account=await credential(id,'catalog');
     const credentials=await db.select('fs_credentials',{unit_id:eq(id),select:'kind'});
-    return {unit:safeUnit(unit),email:account?.email||'',avec:credentials.some(c=>c.kind==='avec'),
+    return {unit:safeUnit(unit),email:account?.email||'',base_url:account?.baseUrl||DEFAULT_API_BASE,avec:credentials.some(c=>c.kind==='avec'),
       channels:await db.select('fs_channels',{unit_id:eq(id),order:'name'}),
       templates:await db.select('fs_templates',{unit_id:eq(id),order:'name'})};
   }
@@ -132,8 +133,8 @@ export function application({ db, secrets, catalog = readCatalog, send = sendMes
     }
     return {channel,template};
   }
-  function validateSender(sender,channel,tenant) {
-    senderEndpoint(sender.url);
+  function validateSender(sender,channel,tenant,baseUrl = DEFAULT_API_BASE) {
+    senderEndpoint(sender.url,baseUrl);
     let claims;
     try{claims=JSON.parse(Buffer.from(sender.token.split('.')[1],'base64url').toString('utf8'))}
     catch{throw new AppError('Token de envio inválido.')}
@@ -186,7 +187,9 @@ export function application({ db, secrets, catalog = readCatalog, send = sendMes
       const {channel,template}=await deliveryConfig(job.unit_id,job.channel_id,job.template_id);
       const sender=await credential(job.unit_id,'sender:'+channel.id);
       assert(sender,'Credencial de envio pendente.');
-      validateSender(sender,channel,unit.catalog_tenant);
+      const account=await credential(job.unit_id,'catalog');
+      const baseUrl=account?.baseUrl||DEFAULT_API_BASE;
+      validateSender(sender,channel,unit.catalog_tenant,baseUrl);
       if(job.kind!=='test'){
         const contact=await one('fs_contacts',{id:eq(job.contact_id),unit_id:eq(job.unit_id)});
         assert(contact?.consent&&contact.phone===job.phone,'O contato revogou a autorização ou mudou de telefone.');
@@ -205,7 +208,7 @@ export function application({ db, secrets, catalog = readCatalog, send = sendMes
         variable_keys:template?.variables,fields:job.payload.fields||{},
         test_run:job.kind==='test',payload:{...job.payload,variable_mapping:job.payload.mapping,test_params:job.payload.params},
       });
-      const result=await send(sender,payload);
+      const result=await send({...sender,baseUrl},payload);
       outcome={status:result.status==='processing'?'accepted':result.status,external_id:result.externalId,
         error:null,completed_at:new Date().toISOString()};
     } catch(error) {
@@ -274,11 +277,21 @@ export function application({ db, secrets, catalog = readCatalog, send = sendMes
       master(user);
       assert(!busy.has(id),'A sincronização já está em andamento.',409);
       const previous=await credential(id,'catalog');
-      if(input.email || input.password){
+      if(input.email || input.password || input.base_url){
         const email=text(input.email,160).toLowerCase();
+        let baseUrl;
+        try { baseUrl=apiBase(input.base_url||previous?.baseUrl||DEFAULT_API_BASE); }
+        catch(error) { throw new AppError(error.message); }
         assert(/^[^@\s]+@[^@\s]+$/.test(email),'Informe o e-mail Clickmassa.');
         assert(input.password || previous?.email===email,'Informe a senha da conta.');
-        await saveCredential(id,'catalog',{email,password:input.password||previous.password});
+        const changed=previous&&baseUrl!==apiBase(previous.baseUrl||DEFAULT_API_BASE);
+        if(changed){
+          await db.update('fs_channels',{unit_id:eq(id)},{enabled:false,configured:false});
+          await db.update('fs_jobs',{unit_id:eq(id),status:'eq.queued'},{status:'skipped',error:'A URL da integração foi alterada. Revise o envio.'});
+          await db.update('fs_rules',{unit_id:eq(id)},{enabled:false,armed_at:null});
+          await db.update('fs_units',{id:eq(id)},{catalog_tenant:null});
+        }
+        await saveCredential(id,'catalog',{baseUrl,email,password:input.password||previous.password});
       }
       assert(await credential(id,'catalog'),'Cadastre a conta Clickmassa.');
       await db.update('fs_units',{id:eq(id)},{sync_state:'pending',sync_error:null});
@@ -290,15 +303,18 @@ export function application({ db, secrets, catalog = readCatalog, send = sendMes
       const channel=await one('fs_channels',{id:eq(uuid(input.channel_id)),unit_id:eq(id)});
       assert(channel,'Canal não encontrado.',404);
       let sender=await credential(id,'sender:'+channel.id);
+      const account=await credential(id,'catalog');
+      const baseUrl=account?.baseUrl||DEFAULT_API_BASE;
       if(input.url || input.token){
-        const url=new URL(input.url);
+        let url;
+        try{url=new URL(input.url)}catch{throw new AppError('Informe uma URL de envio válida.')}
         const token=text(input.token,5000)||url.searchParams.get('token');
         url.search='';
-        sender={url:senderEndpoint(url.href),token};
-        validateSender(sender,channel,unit.catalog_tenant);
-        await saveCredential(id,'sender:'+channel.id,sender);
+        try{sender={url:senderEndpoint(url.href,baseUrl),token,baseUrl}}catch(error){throw new AppError(error.message)}
       }
       assert(sender,'Informe a URL e o token do canal.');
+      try{validateSender(sender,channel,unit.catalog_tenant,baseUrl)}catch(error){throw new AppError(error.message)}
+      if(input.url||input.token)await saveCredential(id,'sender:'+channel.id,sender);
       await db.update('fs_channels',{id:eq(channel.id),unit_id:eq(id)},{configured:true,enabled:input.enabled===true});
       return {saved:true};
     }

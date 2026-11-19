@@ -163,6 +163,8 @@ function integrationPage(){
   <div class="integration-layout"><div class="stack">
    <section class="card stack"><h2>Conta Clickmassa</h2><p class="hint">Use a conta que pode acessar os canais e os modelos da empresa.</p>
     <form id="catalog-form" class="stack">
+     ${input('URL base da API Clickmassa','catalog_base_url','url',info.base_url,'required placeholder="https://api.seudominio.com.br" autocomplete="off"')}
+     <p class="hint">Login, canais e modelos usam essa base. Trocar a API pausa as rotinas e exige revisar os canais de envio.</p>
      ${input('E-mail Clickmassa','catalog_email','email',info.email,'required autocomplete="off"')}
      ${input('Senha Clickmassa','catalog_password','password','','autocomplete="new-password" '+(!info.email?'required':''))}
      ${info.email?'<p class="hint">Preencha a senha apenas para substituir a credencial cadastrada.</p>':''}
@@ -526,7 +528,7 @@ async function submit(form){
     case 'unit-form':
       await api('/units','POST',data);state.units=await api('/units');dialog.close();render();toast('Unidade criada.');return;
     case 'catalog-form':
-      await api('/units/'+state.integration.unit.id+'/catalog','POST',{email:data.catalog_email,password:data.catalog_password});
+      await api('/units/'+state.integration.unit.id+'/catalog','POST',{base_url:data.catalog_base_url,email:data.catalog_email,password:data.catalog_password});
       form.elements.catalog_password.value='';
       state.integration=await api('/units/'+state.integration.unit.id+'/integration');
       renderMain();toast('Catálogo solicitado. Acompanhe o estado da conexão.');return;

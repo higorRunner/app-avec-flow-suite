@@ -6,7 +6,38 @@ import { candidates } from '../server/routines.mjs';
 import { passwordHash, passwordMatches, secretBox } from '../server/security.mjs';
 import { createAppServer } from '../server/main.mjs';
 import { fetchReportPage, AvecError } from '../server/providers/avec.mjs';
-import { readCatalog, ProviderError } from '../server/providers/clickmassa.mjs';
+import { readCatalog, ProviderError, sendMessage } from '../server/providers/clickmassa.mjs';
+import { apiBase, externalEndpoint, publicAddress } from '../server/providers/http.mjs';
+
+test('custom Clickmassa base is used for login, channels, templates and channel send URL',async()=>{
+  const base='https://api.example.test/platform';
+  const calls=[];
+  const catalog=await readCatalog({baseUrl:base+'/',email:'user@example.test',password:'fake',fetchImpl:async(url)=>{
+    calls.push(url);
+    if(url===base+'/auth/login/')return Response.json({tenantId:5,token:'catalog-token'});
+    if(url===base+'/whatsapp/?hideInactive=true')return Response.json([
+      {id:12,tenantId:5,name:'Canal de teste',type:'waba',isActive:true,status:'CONNECTED'},
+    ]);
+    assert.equal(new URL(url).searchParams.get('whatsappId'),'12');
+    assert(url.startsWith(base+'/templates?'));
+    return Response.json({templates:[{id:30,whatsappId:12,hsmId:'333',tenantId:5,name:'Modelo',
+      templateType:'TEXT',status:'APPROVED',components:[{type:'BODY',text:'Olá'}]}],hasMore:false});
+  }});
+  assert.equal(catalog.channels[0].external_id,'12');
+  assert.equal(calls.length,3);
+  const endpoint=base+'/v1/api/external/00000000-0000-0000-0000-000000000001';
+  await sendMessage({baseUrl:base,url:endpoint,token:'sender-token'},{number:'5511999990000'},async(url,options)=>{
+    assert.equal(url,endpoint);
+    assert.equal(options.headers.Authorization,'Bearer sender-token');
+    return Response.json({message:{id:'provider-id',status:'pending'}});
+  });
+  assert.throws(()=>externalEndpoint(endpoint,'https://other.example.test'));
+  assert.throws(()=>apiBase('http://api.example.test'));
+  assert.throws(()=>apiBase('https://127.0.0.1'));
+  assert.equal(publicAddress('10.0.0.1'),false);
+  assert.equal(publicAddress('::ffff:127.0.0.1'),false);
+  assert.equal(publicAddress('8.8.8.8'),true);
+});
 
 test('integration failures identify HTTP status without exposing credentials or response bodies',async()=>{
   const secret='private-test-credential';
@@ -50,7 +81,7 @@ test('master setup, catalog sync, test send, idempotency, queue acknowledgement 
   try{
     const master={id:randomUUID(),master:true};
     const unit=await f.app.route(master,'POST','/units',{name:'Test unit',slug:'test'});
-    await f.app.route(master,'POST','/units/'+unit.id+'/catalog',{email:'test@example.test',password:'fake'});
+    await f.app.route(master,'POST','/units/'+unit.id+'/catalog',{base_url:'https://api.custom.test',email:'test@example.test',password:'fake'});
     for(let i=0;i<50;i++){
       if((await f.db.select('fs_units',{id:'eq.'+unit.id}))[0].sync_state==='ready')break;
       await new Promise(resolve=>setTimeout(resolve,5));
@@ -58,11 +89,12 @@ test('master setup, catalog sync, test send, idempotency, queue acknowledgement 
     let info=await f.app.route(master,'GET','/units/'+unit.id+'/integration',{});
     assert.equal(info.channels.length,2);
     assert.equal(info.templates.length,1);
+    assert.equal(info.base_url,'https://api.custom.test');
     assert(!JSON.stringify(info).includes('"password"'));
     const channel=info.channels.find(c=>c.type==='waba'),template=info.templates[0];
     const claims=Buffer.from(JSON.stringify({tenantId:10,sessionId:1,channelType:'waba',exp:Date.now()/1000+3600})).toString('base64url');
     await f.app.route(master,'POST','/units/'+unit.id+'/sender',{channel_id:channel.id,
-      url:'https://suporteapi.clickmassa.com.br/v1/api/external/00000000-0000-0000-0000-000000000001?token=fake.'+claims+'.signature',enabled:true});
+      url:'https://api.custom.test/v1/api/external/00000000-0000-0000-0000-000000000001?token=fake.'+claims+'.signature',enabled:true});
     const request={request_id:randomUUID(),kind:'test',phone:'+5511999990000',channel_id:channel.id,template_id:template.id,
       params:['Equipe'],confirm:true};
     await f.app.route(master,'POST','/units/'+unit.id+'/send',request);
@@ -90,6 +122,15 @@ test('master setup, catalog sync, test send, idempotency, queue acknowledgement 
     const contact=(await f.db.select('fs_contacts'))[0];
     await assert.rejects(f.app.route(master,'POST','/units/'+unit.id+'/send',{...request,kind:'manual',contacts:[contact.id]}),
       /sem autorização/);
+    await f.db.insert('fs_jobs',{unit_id:unit.id,channel_id:channel.id,template_id:template.id,phone:'+5511999990000',
+      kind:'test',idempotency_key:'pending-before-move',payload:{params:['Equipe']}});
+    await f.db.insert('fs_rules',{unit_id:unit.id,name:'Regra antiga',type:'birthday',channel_id:channel.id,
+      template_id:template.id,enabled:true,armed_at:new Date().toISOString()});
+    await f.app.route(master,'POST','/units/'+unit.id+'/catalog',{base_url:'https://api.new.test',
+      email:'test@example.test',password:''});
+    assert.equal((await f.db.select('fs_jobs',{idempotency_key:'eq.pending-before-move'}))[0].status,'skipped');
+    assert.equal((await f.db.select('fs_rules'))[0].enabled,false);
+    assert.equal((await f.db.select('fs_channels',{id:'eq.'+channel.id}))[0].enabled,false);
   }finally{
     await new Promise(resolve=>setTimeout(resolve,50));
     await f.pg.close();

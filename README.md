@@ -27,7 +27,7 @@ As credenciais de integração são criptografadas com AES-256-GCM. O servidor u
 ## Primeiro uso
 
 1. No painel master, crie a unidade e abra **Integrações**.
-2. Cadastre e-mail e senha Clickmassa e clique em **Salvar e importar catálogo**. A empresa é identificada pelo retorno do login. Canais e modelos são importados e o estado aparece na mesma página.
+2. Cadastre a **URL base da API Clickmassa**, o e-mail e a senha e clique em **Salvar e importar catálogo**. O servidor acrescenta as rotas de login, canais e modelos à base cadastrada. A empresa é identificada pelo retorno do login. Canais e modelos são importados e o estado aparece na mesma página.
 3. Em **Canais de envio**, configure a URL da API externa e o token emitido para cada canal. Uma URL contendo o parâmetro token pode ser colada diretamente. O token será extraído e enviado pelo servidor no header de autorização.
 4. Marque **Liberar envios neste canal** e abra a operação da unidade.
 5. Em **Envios → Envio de teste**, informe um telefone da equipe que autorizou o teste, selecione o canal e revise o conteúdo. No Oficial, use um modelo textual aprovado. No QR Code, preencha a mensagem e, se desejar, uma nota interna.
@@ -47,6 +47,10 @@ O login do FlowSuite é próprio. As senhas são armazenadas com scrypt e salt i
 ## Conexões e rotinas
 
 O catálogo Clickmassa sincroniza ao salvar a conta e a cada 15 minutos. Salvar uma credencial mantém a senha antiga quando o campo fica vazio. A senha de catálogo e o token externo de envio são independentes.
+
+A URL base aceita HTTPS e um endereço público, incluindo um prefixo de caminho quando necessário. As contas já cadastradas mantêm a API anterior como padrão até você alterá-la. Trocar a URL base desativa a liberação dos canais, pausa as regras e ignora os itens ainda na fila dessa unidade para revisão. Configure novamente o envio dos canais antes de reativar as rotinas.
+
+O ID numérico do canal identifica o canal retornado pelo catálogo e é conferido com o campo sessionId do token externo. O envio usa a URL externa completa cadastrada para esse canal, dentro da mesma base da API. O UUID da rota externa precisa ser fornecido pelo Clickmassa.
 
 O relatório AVEC 0004 pode ser consultado no painel master. Após uma resposta válida, selecione as colunas de nome e telefone para importar os clientes. E-mail e nascimento são opcionais. A importação mantém o consentimento já cadastrado e deixa novos clientes sem autorização até revisão individual. As datas de nascimento importadas devem usar AAAA-MM-DD. As demais rotas AVEC e a importação de serviços e agenda exigem contratos de resposta validados. Serviços e atendimentos já podem ser cadastrados no próprio FlowSuite.
 
