@@ -71,7 +71,8 @@ export async function syncAvecData({db,unit,token,report,onTrace,now=new Date()}
     // Two distinct AVEC customer IDs sharing a phone cannot be merged silently.
     if(previous?.external_id&&external&&previous.external_id!==external){summary.skipped++;return null}
     const value={id:previous?.id||randomUUID(),unit_id:unit.id,external_id:external||previous?.external_id||null,
-      name,phone:number,email:text(row.email,160)||previous?.email||null,birthday:avecBirthday(row.aniversario)||previous?.birthday||null,
+      name,phone:number,avec_global_id:row.cliente_id?String(row.cliente_id):previous?.avec_global_id||null,
+      email:text(row.email,160)||previous?.email||null,birthday:avecBirthday(row.aniversario)||previous?.birthday||null,
       birthday_month_day:avecBirthdayMonthDay(row.aniversario)||previous?.birthday_month_day||null,
       consent:previous?.consent||false,source:'avec'};
     if(batch&&(!previous||previous.phone===number))contactBatch.push(value);

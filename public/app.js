@@ -1,3 +1,4 @@
+import { reportComposer } from './report-composer.js';
 const root=document.getElementById('app');
 const dialog=document.getElementById('dialog');
 const state={user:null,units:[],unit:null,data:null,integration:null,members:[],page:'home',tab:'connect',menu:false,
@@ -29,6 +30,10 @@ const canSend=()=>state.user.master||['manager','operator'].includes(state.data?
 const unitLink=unit=>location.origin+'/?unidade='+encodeURIComponent(unit.slug);
 const readyChannels=()=>state.data?.channels.filter(c=>c.active&&c.enabled&&c.configured)||[];
 const readyModels=(channel)=>state.data?.templates.filter(t=>t.channel_id===channel&&t.active&&t.supported)||[];
+const composer=reportComposer({api,h,select,button,table,openDialog,unitPath,channels:readyChannels,
+  models:()=>state.data?.templates.filter(t=>t.active&&t.supported)||[],toast,
+  onSent:async()=>{state.page='reports';await refreshData();render()}});
+const brandLogo='<img class="brand-logo" src="/logo.webp" alt="FlowSuite" width="218" height="73">';
 
 async function api(path,method='GET',data) {
   const response=await fetch('/api'+path,{method,headers:method==='GET'?{}:{'Content-Type':'application/json'},
@@ -51,11 +56,11 @@ function toast(message,error=false){
 }
 function renderLogin(message=''){
   root.innerHTML=`<main class="auth">
-   <aside class="auth-story"><div class="brand"><span class="brand-mark">f</span>FlowSuite</div>
+   <aside class="auth-story"><div class="brand">${brandLogo}</div>
     <div><h1>Cada contato.<br>Cada retorno.<br>Uma operação.</h1><p>Conecte seu atendimento, acompanhe as mensagens e cuide da jornada de cada cliente.</p></div>
     <small>Central de relacionamento</small>
    </aside>
-   <section class="auth-form"><div class="auth-card stack"><div><h1>Entre no FlowSuite</h1><p class="muted">Acesse com a conta criada para sua equipe.</p></div>
+   <section class="auth-form"><div class="auth-card stack"><div class="mobile-brand">${brandLogo}</div><div><h1>Entre no FlowSuite</h1><p class="muted">Acesse com a conta criada para sua equipe.</p></div>
     ${message?`<p class="alert error" role="alert">${h(message)}</p>`:''}
     <form id="login-form" class="stack">
      ${input('E-mail','email','email','','required autocomplete="username" maxlength="160"')}
@@ -102,7 +107,7 @@ function render(){
   root.innerHTML=`<div class="layout ${master?'master-mode':'operation-mode'}">
    <button class="scrim" data-action="menu" aria-label="Fechar menu" ${state.menu?'':'hidden'}></button>
    <aside class="sidebar ${state.menu?'open':''}" id="sidebar">
-    <div class="brand"><span class="brand-mark">f</span>FlowSuite</div>
+    <div class="brand">${brandLogo}</div>
     <div><p class="sidebar-caption">${master?'Administração master':'Operação da unidade'}</p>
      <nav aria-label="${master?'Administração':'Operação'}">${navigation().map(([id,title,icon])=>
       `<button class="nav-link ${state.page===id?'active':''}" data-page="${id}" ${state.page===id?'aria-current="page"':''}><span class="nav-icon" aria-hidden="true">${icon}</span>${title}</button>`).join('')}</nav></div>
@@ -344,7 +349,12 @@ function avecSummary(){
 }
 function feedbackPage(){
   const feedback=state.data.feedback||{},responses=feedback.responses||[];
-  return `${head('Satisfação dos clientes','Acompanhe as avaliações recebidas nas pesquisas enviadas após o atendimento.',button('Atualizar','refresh','','small'))}
+  return `${head('Satisfação dos clientes','Acompanhe as avaliações recebidas nas pesquisas enviadas após o atendimento.',canManage()?button('Configurar pesquisa CSAT','new-csat','','primary'):button('Atualizar','refresh','','small'))}
+   <section class="card stack csat-guide"><div class="actions between"><h2>Sua pesquisa no dia seguinte</h2>${badge(feedback.configured?'Link disponível':'Endereço pendente',feedback.configured?'ok':'warn')}</div>
+    <p>O cliente recebe um link individual, escolhe uma nota de 1 a 5 e pode deixar um comentário. A resposta aparece aqui e no histórico do cliente.</p>
+    <div class="rating-demo" aria-label="Pesquisa com notas de 1 a 5"><span>1</span><span>2</span><span>3</span><span>4</span><span>5 <small>Excelente</small></span></div>
+    <p class="hint">${feedback.configured?'Escolha um modelo aprovado com um campo para o link da pesquisa. Na rotina, selecione o link individual e o intervalo de 1 dia.':'Solicite ao administrador o endereço público da pesquisa para habilitar os links de avaliação.'}</p>
+    <p class="hint">${state.data.rules.filter(r=>r.type==='csat'&&r.enabled).length} rotina(s) de satisfação ativa(s). As respostas são únicas e o link vale por 30 dias.</p></section>
    <div class="metrics">${metric('Pesquisas geradas',feedback.invited??0)}${metric('Respostas',feedback.total??responses.length)}
     ${metric('Nota média',feedback.average===null||feedback.average===undefined?'—':Number(feedback.average).toFixed(1)+' / 5')}${metric('Satisfeitos',feedback.satisfied===null||feedback.satisfied===undefined?'—':feedback.satisfied+'%')}</div>
    <section class="card stack"><h2>Avaliações recebidas</h2>${responses.length?table(['Recebida em','Cliente','Nota','Comentário'],responses.map(r=>[
@@ -425,7 +435,7 @@ function reportResult(){
   if(!report)return '';
   const columns=report.columns||Object.keys(report.rows?.[0]||{}),rows=report.rows||[];
   return `<div class="stack"><p class="hint">Página ${state.reportPage} · ${rows.length} linha(s) nesta página.</p>
-   ${rows.length?table(columns,rows.map(row=>columns.map(key=>h(row[key]===null||row[key]===undefined?'—':typeof row[key]==='object'?'Conteúdo composto':row[key])))):empty('Nenhum resultado neste filtro','Confira o período e os filtros informados.')}
+    ${rows.length?composer.renderRows({...report,code:state.reportCode}):empty('Nenhum resultado neste filtro','Confira o período e os filtros informados.')}
    <div class="pager">${button('Página anterior','report-prev',state.reportPage>1?'':'disabled','small')}${button('Próxima página','report-next',report.has_more?'':'disabled','small')}</div></div>`;
 }
 async function queryReport(form,page=1){
@@ -560,6 +570,7 @@ function readMapping(form){
 }
 
 async function action(name,btn){
+  if(await composer.action(name,btn))return;
   const id=btn.dataset.id;
   switch(name){
     case 'menu':
@@ -690,6 +701,10 @@ async function action(name,btn){
     case 'new-rule':
       if(!readyChannels().some(c=>c.type==='waba')){toast('Prepare um canal Oficial com um modelo aprovado.',true);return}
       ruleDialog();return;
+    case 'new-csat':
+      if(!state.data.feedback?.configured)throw Error('O administrador precisa configurar o endereço público da pesquisa (PUBLIC_ORIGIN).');
+      if(!readyChannels().some(c=>c.type==='waba'))throw Error('Prepare um canal Oficial com um modelo aprovado para a pesquisa.');
+      ruleDialog({name:'Satisfação no dia seguinte',type:'csat',delay_days:1,send_time:'09:00'});return;
     case 'edit-rule':
       ruleDialog(state.data.rules.find(r=>r.id===id));return;
     case 'pause-rule':
@@ -705,6 +720,7 @@ async function action(name,btn){
 }
 
 async function submit(form){
+  if(await composer.submit(form))return;
   const f=new FormData(form);
   const data=Object.fromEntries(f);
   switch(form.id){

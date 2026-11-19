@@ -7,6 +7,7 @@ import { syncAvecData, avecConfig } from './avec-sync.mjs';
 import reportCatalog from './providers/avec-catalog.json' with {type:'json'};
 import { professionalAlerts } from './alerts.mjs';
 import { candidates, ruleTypes } from './routines.mjs';
+import { reportDispatch } from './report-dispatch.mjs';
 
 const eq = value => 'eq.' + value;
 const fields = ['customer.name','customer.phone','customer.email','customer.birthday','service.name',
@@ -14,10 +15,11 @@ const fields = ['customer.name','customer.phone','customer.email','customer.birt
 const safeUnit = ({ avec_sample, ...unit }) => ({ ...unit, sample_columns:Object.keys(avec_sample?.[0]||{}) });
 
 export function application({ db, secrets, catalog = readCatalog, send = sendMessage, report = fetchReportAll,
-  version = process.env.GIT_SHA || 'desenvolvimento', survey }) {
+  version = process.env.GIT_SHA || 'desenvolvimento', survey, pageReport=fetchReportPage }) {
   const busy = new Set();
   let ticking=false;
   const alerts=professionalAlerts({db,deliveryConfig});
+  const dispatch=reportDispatch({db,deliveryConfig});
 
   async function one(table, where) {
     return (await db.select(table,{...where,limit:1}))[0] || null;
@@ -71,7 +73,7 @@ export function application({ db, secrets, catalog = readCatalog, send = sendMes
     ]);
     const responses=feedback.filter(row=>row.score!==null);
     return {unit:safeUnit(unit),channels,templates,contacts,services,appointments,rules,jobs,events,professionals,
-      products:stock[0]?.payload?.products||[],feedback:{responses,total:responses.length,invited:feedback.length,
+      products:stock[0]?.payload?.products||[],feedback:{configured:survey?.configured||false,responses,total:responses.length,invited:feedback.length,
         average:responses.length?responses.reduce((sum,row)=>sum+row.score,0)/responses.length:null,
         satisfied:responses.length?100*responses.filter(row=>row.score>=4).length/responses.length:0}};
   }
@@ -317,6 +319,7 @@ export function application({ db, secrets, catalog = readCatalog, send = sendMes
       }
       for(let i=0;i<10;i++) if(!await processJob()) break;
       await db.remove('fs_sessions',{expires_at:'lt.'+new Date().toISOString()});
+      await db.remove('fs_report_previews',{expires_at:'lt.'+new Date().toISOString()});
       if(Date.now()>nextLogCleanup){
         await db.remove('fs_events',{event:'eq.diagnostic',created_at:'lt.'+new Date(Date.now()-7*86400000).toISOString()});
         nextLogCleanup=Date.now()+3600000;
@@ -420,10 +423,18 @@ export function application({ db, secrets, catalog = readCatalog, send = sendMes
       assert(Number.isInteger(params.page)&&params.page>=1&&params.page<=100,'Página inválida.');
       if(unit.avec_config?.salon_id)params.salao_unidade_id=unit.avec_config.salon_id;
       try{
-        const result=await fetchReportPage({code:definition.code,token:value.token,params,onTrace:trace(id,'AVEC')});
-        return {columns:[...new Set(result.result.flatMap(row=>Object.keys(row||{})))],rows:result.result,
+        const result=await pageReport({code:definition.code,token:value.token,params,onTrace:trace(id,'AVEC')});
+        const snapshot=await dispatch.issue({unit:id,user:user.id,code:definition.code,rows:result.result});
+        return {...snapshot,columns:[...new Set(result.result.flatMap(row=>Object.keys(row||{})))],rows:result.result,
           records:result.result.length,pages:params.page,has_more:result.hasMore};
       }catch(error){throw new AppError(error instanceof AvecError?error.message:'Não foi possível consultar o relatório.',502)}
+    }
+    if(['report-preview','report-send'].includes(action)&&method==='POST'){
+      assert(unit.role==='master'||unit.role==='manager','Esta ação exige um gestor.',403);
+      if(action==='report-preview')return dispatch.preview(id,user.id,input);
+      const result=await dispatch.enqueue(id,user.id,input);
+      await event(id,'report_send','ok',`${result.queued} mensagens manuais adicionadas à fila pelo relatório.`);
+      launch(tick);return result;
     }
     if(action==='contacts'&&parts[3]&&parts[4]==='history'&&method==='GET'){
       const contact=await one('fs_contacts',{unit_id:eq(id),id:eq(uuid(parts[3]))});assert(contact,'Cliente não encontrado.',404);

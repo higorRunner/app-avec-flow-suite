@@ -4,6 +4,14 @@ Site, API e execução das rotinas rodam no mesmo processo Node.js. O Supabase f
 
 ## Atualizar a instalação existente
 
+Para instalar a nova identidade visual e os envios por itens dos relatórios, execute também **[sql/ATUALIZAR_ENVIOS_RELATORIOS.sql](sql/ATUALIZAR_ENVIOS_RELATORIOS.sql)**, depois das migrações anteriores. Essa atualização preserva os dados e cria consultas temporárias privadas com validade de 30 minutos. Depois faça o deploy dos arquivos atualizados.
+
+Em **Relatórios**, consulte a AVEC, marque até 100 itens da página e clique em **Preparar envio**. Selecione a coluna de telefone ou ID do cliente, o canal Oficial e um modelo aprovado. Cada parâmetro do modelo pode usar uma coluna do relatório ou o nome/telefone do cliente identificado. Revise os destinatários e o conteúdo antes de confirmar. Cada item gera sua própria mensagem; itens do mesmo cliente podem gerar mensagens distintas, com aviso na revisão.
+
+O ID local é resolvido pelo cadastro sincronizado. A coluna cliente_id usa o identificador global registrado pela sincronização AVEC desta versão; sincronize novamente após atualizar. Telefones inválidos, IDs desconhecidos, identidades conflitantes e clientes cadastrados sem autorização ficam bloqueados. Novos números exigem confirmação específica para cadastrar autorização. O servidor usa os dados originais da consulta e revalida cada destinatário, sem aceitar números ou valores alterados pelo navegador. Repetir a confirmação da mesma seleção não duplica a fila. A seleção pertence ao usuário e à unidade que fizeram a consulta; trocar a consulta ou a página inicia uma nova seleção.
+
+Em **Satisfação**, o botão **Configurar pesquisa CSAT** abre uma rotina para o dia seguinte. A tela mostra se o link da pesquisa está disponível. Use um modelo aprovado com um parâmetro mapeado para **Link individual da pesquisa de satisfação**. A pesquisa pública recebe uma nota de 1 a 5 e comentário, sem expor o cadastro do cliente. O menu de administração master só aparece para contas master; as rotas também conferem o perfil no servidor. Gestores administram a operação e os envios por relatório, operadores acessam suas funções operacionais e contas de consulta não enviam mensagens.
+
 1. No SQL Editor do Supabase, execute **[sql/ATUALIZAR_INTEGRACAO_AVEC.sql](sql/ATUALIZAR_INTEGRACAO_AVEC.sql)**. É uma atualização aditiva, repetível, que preserva contas, unidades, credenciais e configurações. Não execute o script de reinicialização para atualizar.
 2. Nas variáveis privadas do FlowSuite no EasyPanel, configure **PUBLIC_ORIGIN** com a URL pública HTTPS do próprio FlowSuite, sem caminho (por exemplo, https://app-avec-flow-suite.sizrit.easypanel.host). Esse endereço gera os links individuais de avaliação CSAT.
 3. Envie todas as alterações para o repositório e faça Deploy. A versão publicada aparece em /health e no diagnóstico master.
@@ -29,7 +37,7 @@ Falhas de sincronização ficam visíveis no diagnóstico e adiam envios automá
 ## Reinstalar
 
 1. Exporte um backup dos dados atuais e pare o antigo serviço executor, se ele tiver sido criado.
-2. No SQL Editor do seu Supabase, execute **[sql/RECRIAR_FLOWSUITE.sql](sql/RECRIAR_FLOWSUITE.sql)** e depois **[sql/ATUALIZAR_INTEGRACAO_AVEC.sql](sql/ATUALIZAR_INTEGRACAO_AVEC.sql)**. O primeiro arquivo apaga as tabelas e funções das versões do FlowSuite; o segundo instala os recursos AVEC e CSAT. Os dados e as contas do FlowSuite serão apagados somente pelo primeiro script. A infraestrutura de autenticação, armazenamento e extensões do Supabase continua disponível.
+2. No SQL Editor do seu Supabase, execute, nesta ordem: **[sql/RECRIAR_FLOWSUITE.sql](sql/RECRIAR_FLOWSUITE.sql)**, **[sql/ATUALIZAR_INTEGRACAO_AVEC.sql](sql/ATUALIZAR_INTEGRACAO_AVEC.sql)** e **[sql/ATUALIZAR_ENVIOS_RELATORIOS.sql](sql/ATUALIZAR_ENVIOS_RELATORIOS.sql)**. O primeiro arquivo apaga os dados e as contas do FlowSuite. Os outros dois instalam as integrações, avaliações e seleção de relatórios. A infraestrutura de autenticação, armazenamento e extensões do Supabase continua disponível.
 3. No serviço web atual do EasyPanel, use o repositório deste projeto, branch **main**, Build Path **/** e builder **Dockerfile** com caminho **Dockerfile**.
 4. Configure as variáveis abaixo nas variáveis privadas desse mesmo serviço.
 5. No domínio do serviço, altere a porta de destino para **3000** e faça **Deploy**.

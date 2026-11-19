@@ -9,10 +9,12 @@ import { AppError, assert, digest, passwordHash, passwordMatches, secretBox, ses
 const files = new Map([
   ['/', ['index.html','text/html; charset=utf-8']],
   ['/app.js',['app.js','text/javascript; charset=utf-8']],
+  ['/report-composer.js',['report-composer.js','text/javascript; charset=utf-8']],
   ['/style.css',['style.css','text/css; charset=utf-8']],
   ['/avaliar',['feedback.html','text/html; charset=utf-8']],
   ['/feedback.js',['feedback.js','text/javascript; charset=utf-8']],
   ['/feedback.css',['feedback.css','text/css; charset=utf-8']],
+  ['/logo.webp',['logo.webp','image/webp']],
 ]);
 const cookieName='flowsuite_session';
 
@@ -51,12 +53,16 @@ export function createAppServer({ db, app, survey, version='rebuild-1', secure=t
     res.setHeader('Permissions-Policy','camera=(), microphone=(), geolocation=()');
     res.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'self' https://cs.clickmassa.com.br; form-action 'self'");
     res.setHeader('Cache-Control','no-store');
+    if(secure)res.setHeader('Strict-Transport-Security','max-age=31536000');
     const json=(status,data)=>{res.writeHead(status,{'Content-Type':'application/json; charset=utf-8'});res.end(JSON.stringify(data))};
     try {
       const url=new URL(req.url,'http://localhost');
       if(files.has(url.pathname)&&req.method==='GET'){
         const [file,type]=files.get(url.pathname);
         const data=await readFile(new URL('../public/'+file,import.meta.url));
+        const tag='"'+digest(data)+'"';
+        res.setHeader('ETag',tag);res.setHeader('Cache-Control','public, max-age=0, must-revalidate');
+        if(req.headers['if-none-match']===tag){res.writeHead(304);res.end();return}
         res.writeHead(200,{'Content-Type':type});res.end(data);return;
       }
       if(url.pathname==='/health'&&req.method==='GET'){
