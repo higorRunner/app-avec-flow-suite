@@ -11,7 +11,8 @@ const identifier=value=>{
 export async function fixture() {
   const pg=new PGlite();
   await pg.exec("CREATE ROLE anon; CREATE ROLE authenticated; CREATE ROLE service_role BYPASSRLS; CREATE SCHEMA auth; CREATE TABLE auth.users(id uuid);");
-  const schema=await readFile(new URL('../sql/RECRIAR_FLOWSUITE.sql',import.meta.url),'utf8');
+  const schema=(await readFile(new URL('../sql/RECRIAR_FLOWSUITE.sql',import.meta.url),'utf8'))+'\n'+
+    (await readFile(new URL('../sql/ATUALIZAR_INTEGRACAO_AVEC.sql',import.meta.url),'utf8'));
   await pg.exec(schema);
   const data={pg,schema};
   function where(params,values) {

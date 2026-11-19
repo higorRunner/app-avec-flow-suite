@@ -25,6 +25,14 @@ export function avecBirthday(value) {
   return Number.isNaN(date.getTime())||date.toISOString().slice(0,10)!==normalized||date>Date.now()?null:normalized;
 }
 
+export function avecBirthdayMonthDay(value){
+  const full=avecBirthday(value);if(full)return full.slice(5);
+  const match=typeof value==='string'&&value.trim().match(/^(\d{1,2})\/(\d{1,2})$/);
+  if(!match)return null;
+  const normalized=`2000-${match[2].padStart(2,'0')}-${match[1].padStart(2,'0')}`;
+  return avecBirthday(normalized)?.slice(5)||null;
+}
+
 export function formatAvecDate(value) {
   if (!(value instanceof Date) || Number.isNaN(value.getTime())) throw new Error('Data inválida');
   const dd = String(value.getUTCDate()).padStart(2,'0');
@@ -40,7 +48,7 @@ export function requestUrl(code,params={},baseUrl=AVEC_BASE_URL){
   if(!Number.isInteger(page)||page<1||!Number.isInteger(limit)||limit<1||limit>250) throw new Error('Paginação inválida: limite máximo é 250');
   u.searchParams.set('page',String(page));u.searchParams.set('limit',String(limit));
   for(const [key,value] of Object.entries(params)){
-    if(key==='page'||key==='limit'||value===null||value===undefined||value==='')continue;
+    if(key==='page'||key==='limit'||value===null||value===undefined)continue;
     if(BLOCKED.has(key.toLowerCase())||!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(key))throw new Error('Parâmetro não permitido');
     if(Array.isArray(value)||typeof value==='object')throw new Error('Parâmetros devem ser escalares');
     if(['inicio','fim','inicio1','fim1','inicio2','fim2'].includes(key)&&!DATE.test(String(value)))throw new Error(`${key}: use DD/MM/AAAA`);
@@ -63,6 +71,9 @@ function reportPayload(json) {
   const report=envelope.data?.report??envelope.Data?.Report??envelope;
   if(!report||typeof report!=='object'||Array.isArray(report)){
     throw new AvecError('ler relatório','O conteúdo do relatório não tem a estrutura esperada.');
+  }
+  if(report.code!==undefined&&(!Number.isFinite(Number(report.code))||Number(report.code)>=400)){
+    throw new AvecError('executar relatório','O fornecedor informou uma falha interna neste relatório. Tente outra consulta ou contate a AVEC.');
   }
   return report;
 }

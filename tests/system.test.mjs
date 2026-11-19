@@ -5,7 +5,7 @@ import { fixture } from './support.mjs';
 import { candidates } from '../server/routines.mjs';
 import { passwordHash, passwordMatches, secretBox } from '../server/security.mjs';
 import { createAppServer } from '../server/main.mjs';
-import { fetchReportPage, fetchReportAll, AvecError, avecBirthday } from '../server/providers/avec.mjs';
+import { fetchReportPage, fetchReportAll, AvecError, avecBirthday, avecBirthdayMonthDay, requestUrl } from '../server/providers/avec.mjs';
 import { readCatalog, ProviderError, sendMessage } from '../server/providers/clickmassa.mjs';
 import { apiBase, externalEndpoint, publicAddress } from '../server/providers/http.mjs';
 import { responseShape, diagnosticUrl } from '../server/diagnostics.mjs';
@@ -90,6 +90,11 @@ test('reads the observed AVEC report envelope and paginates until report.hasMore
   assert.equal(avecBirthday('31/02/2000'),null);
   assert.equal(avecBirthday('15/1'),null);
   assert.equal(avecBirthday(''),null);
+  assert.equal(avecBirthdayMonthDay('18/11'),'11-18');
+  assert.equal(avecBirthdayMonthDay('31/02'),null);
+  const requiredBlank=new URL(requestUrl('0051',{site:'',profissional_id:''}));
+  assert.equal(requiredBlank.searchParams.get('site'),'');
+  assert.equal(requiredBlank.searchParams.get('profissional_id'),'');
   const pages=[];
   const result=await fetchReportAll({code:'0004',token:'fake-avec-token',fetchImpl:async(url,options)=>{
     const page=Number(new URL(url).searchParams.get('page'));
@@ -117,6 +122,9 @@ test('reads the observed AVEC report envelope and paginates until report.hasMore
   await assert.rejects(fetchReportPage({code:'0004',token:'fake',
     fetchImpl:async()=>Response.json([{code:401,data:{report:{result:[],hasMore:false}}}])}),
     error=>error instanceof AvecError&&error.status===401);
+  await assert.rejects(fetchReportPage({code:'0149',token:'fake',fetchImpl:async()=>
+    Response.json({code:200,data:{report:{code:'HY093',message:'private SQL error'}}})}),
+    error=>error instanceof AvecError&&error.message.includes('falha interna')&&!error.message.includes('private SQL'));
 });
 
 test('custom Clickmassa base is used for login, channels, templates and channel send URL',async()=>{
@@ -255,16 +263,19 @@ test('master setup, catalog sync, test send, idempotency, queue acknowledgement 
 test('rules respect time zone, consent, future bookings and idempotency',()=>{
   const now=new Date('2026-11-18T15:00:00Z');
   const context={unit:{timezone:'America/Sao_Paulo'},now,preview:true,
-    contacts:[{id:'c',consent:true,birthday:'2000-11-18'}],
+    contacts:[{id:'c',consent:true,phone:'+5511999990000',birthday:'2000-11-18'}],
     services:[{id:'s',return_days:30},{id:'target'}],jobs:[],
     appointments:[{id:'a',contact_id:'c',service_id:'s',completed_at:'2026-11-18T13:00:00Z'}]};
   const rule={id:'r',type:'post_service',enabled:true,send_time:'11:00',delay_days:0,cooldown_days:7};
   assert.equal(candidates({...context,rule}).length,1);
   assert.equal(candidates({...context,rule:{...rule,send_time:'13:00'}}).length,0);
   assert.equal(candidates({...context,rule,contacts:[{id:'c',consent:false}]}).length,0);
+  assert.equal(candidates({...context,rule,contacts:[{id:'c',consent:true,phone:null}]}).length,0);
   assert.equal(candidates({...context,rule,jobs:[{idempotency_key:'rule:r:c:a'}]}).length,0);
   assert.equal(candidates({...context,rule:{...rule,type:'birthday'}}).length,1);
   assert.equal(candidates({...context,rule:{...rule,type:'cross_sell',target_service_id:'target'}}).length,1);
+  assert.equal(candidates({...context,rule:{...rule,type:'birthday'},contacts:[{id:'c',consent:true,phone:'+5511999990000',birthday_month_day:'11-18'}]}).length,1);
+  assert.equal(candidates({...context,rule:{...rule,type:'return'},appointments:[{id:'old',contact_id:'c',service_id:'s',completed_at:'2026-10-01T13:00:00Z'}]}).length,1,'Overdue return remains eligible');
 });
 
 test('native scheduler delivers one automatic message and preserves idempotency on the next pass',async()=>{

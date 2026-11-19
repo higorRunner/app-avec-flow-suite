@@ -2,10 +2,34 @@
 
 Site, API e execução das rotinas rodam no mesmo processo Node.js. O Supabase fornece o banco PostgreSQL e a API privada de acesso ao banco.
 
+## Atualizar a instalação existente
+
+1. No SQL Editor do Supabase, execute **[sql/ATUALIZAR_INTEGRACAO_AVEC.sql](sql/ATUALIZAR_INTEGRACAO_AVEC.sql)**. É uma atualização aditiva, repetível, que preserva contas, unidades, credenciais e configurações. Não execute o script de reinicialização para atualizar.
+2. Nas variáveis privadas do FlowSuite no EasyPanel, configure **PUBLIC_ORIGIN** com a URL pública HTTPS do próprio FlowSuite, sem caminho (por exemplo, https://app-avec-flow-suite.sizrit.easypanel.host). Esse endereço gera os links individuais de avaliação CSAT.
+3. Envie todas as alterações para o repositório e faça Deploy. A versão publicada aparece em /health e no diagnóstico master.
+4. No painel master, confira o token AVEC e as credenciais Clickmassa. Abra a operação da unidade e vá a **Configurações**. Habilite a sincronização AVEC, escolha a frequência e o período de histórico e salve. Tokens de franquia podem informar o ID da unidade AVEC.
+5. Em **Clientes**, revise a autorização de contato. Clientes sem telefone continuam no histórico; complete o número antes de enviar. As importações preservam a autorização existente e novos clientes começam sem autorização.
+6. Em **Configurações**, revise os prazos de retorno de cada serviço e cadastre os telefones dos profissionais que autorizam receber avisos. Escolha canal, modelos aprovados e os campos dos avisos de chegada e estoque. Habilite somente os avisos desejados.
+7. Em **Automações**, crie as regras e simule antes de ativar. Para CSAT, use intervalo de um dia e inclua a opção **Link individual da pesquisa de satisfação** em um parâmetro do modelo aprovado. Os clientes respondem por um formulário próprio, com nota de 1 a 5 e comentário. O painel **Satisfação** mostra as últimas 500 pesquisas geradas e suas respostas; notas 4 e 5 são consideradas satisfeitas.
+
+O teste real das 230 consultas está documentado em **[docs/AVEC_ENDPOINTS.md](docs/AVEC_ENDPOINTS.md)**. O explorador em **Relatórios** permite escolher a consulta e preencher filtros sem editar JSON. Profissionais e serviços importados aparecem como seleções nos filtros correspondentes. Consultas financeiras completas exigem perfil gestor ou master.
+
+## Dados AVEC e funcionamento das rotinas
+
+A sincronização consulta os relatórios 0004 (clientes), 0033 (serviços e retorno), 0229 (profissionais), 0155 (agenda com ID real, horário e estado), 0186 (itens de comandas finalizadas) e 0046 (produtos abaixo do mínimo). A frequência padrão é de 15 minutos, configurável entre 5 minutos e uma hora pela interface. O histórico padrão é de 90 dias e a agenda futura de 30 dias. Amplie o histórico para abranger os intervalos desejados das regras.
+
+O sistema atualiza os registros pelos IDs AVEC, conserva consentimentos e permite substituir o prazo de retorno de um serviço localmente. Datas de nascimento sem ano são preservadas apenas como dia e mês, sem inventar a idade. A conclusão depende da data real de finalização da comanda; um horário planejado passado não é considerado serviço concluído. A mesma visita pode aparecer como agendamento e como item da comanda no histórico. CSAT e pós-atendimento usam os itens efetivamente finalizados.
+
+Pós-atendimento e CSAT consideram a data de conclusão e os dias configurados, no horário da unidade. A rotina recupera execuções perdidas desde sua ativação. Retorno usa o prazo médio do serviço; inatividade considera a última conclusão e a ausência de agenda futura; venda complementar permite selecionar serviço de origem e serviço oferecido. Aniversário usa a data de nascimento. Retorno e inatividade incluem clientes cujo prazo já venceu, com controle de intervalo e evento para impedir repetição. Agendamentos futuros e cancelamentos são revalidados antes do envio. Todas as rotinas de clientes exigem telefone e autorização.
+
+O aviso de chegada observa o estado **Aguardando** registrado na agenda AVEC, após a ativação do aviso. A chegada precisa ser marcada pela equipe na AVEC. Os avisos são enviados após a próxima sincronização; a coleção contém relatórios GET, sem webhook de eventos. Estoque usa o mínimo configurado na AVEC e possui intervalo entre avisos. Profissionais precisam ter telefone e avisos habilitados no FlowSuite, pois o relatório AVEC não fornece seus telefones. Alterar configurações, cancelar o atendimento ou repor o produto invalida os avisos ainda na fila.
+
+Falhas de sincronização ficam visíveis no diagnóstico e adiam envios automáticos até a próxima consulta válida. Nenhuma chamada grava dados na AVEC. A fila e as avaliações ficam no Supabase; a execução ocorre no próprio serviço FlowSuite.
+
 ## Reinstalar
 
 1. Exporte um backup dos dados atuais e pare o antigo serviço executor, se ele tiver sido criado.
-2. No SQL Editor do seu Supabase, execute **[sql/RECRIAR_FLOWSUITE.sql](sql/RECRIAR_FLOWSUITE.sql)**. Esse arquivo apaga as tabelas e funções das versões do FlowSuite e cria toda a estrutura desta versão em uma transação. Os dados e as contas do FlowSuite serão apagados. A infraestrutura de autenticação, armazenamento e extensões do Supabase continua disponível. O script pode ser executado novamente para outro reset.
+2. No SQL Editor do seu Supabase, execute **[sql/RECRIAR_FLOWSUITE.sql](sql/RECRIAR_FLOWSUITE.sql)** e depois **[sql/ATUALIZAR_INTEGRACAO_AVEC.sql](sql/ATUALIZAR_INTEGRACAO_AVEC.sql)**. O primeiro arquivo apaga as tabelas e funções das versões do FlowSuite; o segundo instala os recursos AVEC e CSAT. Os dados e as contas do FlowSuite serão apagados somente pelo primeiro script. A infraestrutura de autenticação, armazenamento e extensões do Supabase continua disponível.
 3. No serviço web atual do EasyPanel, use o repositório deste projeto, branch **main**, Build Path **/** e builder **Dockerfile** com caminho **Dockerfile**.
 4. Configure as variáveis abaixo nas variáveis privadas desse mesmo serviço.
 5. No domínio do serviço, altere a porta de destino para **3000** e faça **Deploy**.
@@ -54,9 +78,9 @@ A URL base aceita HTTPS e um endereço público, incluindo um prefixo de caminho
 
 O ID numérico do canal identifica o canal retornado pelo catálogo e é conferido com o campo sessionId do token externo. O envio usa a URL externa completa cadastrada para esse canal, dentro da mesma base da API. O UUID da rota externa precisa ser fornecido pelo Clickmassa.
 
-O relatório AVEC 0004 pode ser consultado no painel master. O leitor aceita o envelope observado com um relatório em data.report, incluindo registros em result e paginação em hasMore. Após uma resposta válida, selecione as colunas de nome e telefone para importar os clientes. Na resposta capturada, os campos são nome, celular, telefone, email e aniversario. Selecione o campo que contém o telefone de contato utilizado pela unidade. E-mail e nascimento são opcionais. A importação mantém o consentimento já cadastrado e deixa novos clientes sem autorização até revisão individual. As datas completas de nascimento aceitam D/M/AAAA ou AAAA-MM-DD. Valores incompletos ou inválidos preservam a data já cadastrada. As demais rotas AVEC e a importação de serviços e agenda exigem contratos de resposta validados. Serviços e atendimentos já podem ser cadastrados no próprio FlowSuite.
+O painel master permite validar o token pelo relatório 0004 e configurar campos de importação manual, se necessário. A sincronização completa da operação reconhece automaticamente os contratos de clientes, serviços, agenda, histórico, profissionais e estoque validados nesta coleção.
 
-As rotinas disponíveis são pós-atendimento, satisfação, retorno, aniversário, inatividade e venda complementar. O serviço avalia as regras a cada minuto e processa a fila a cada cinco segundos. Usa os dados da unidade, fuso horário, autorização, intervalo entre mensagens e chave de evento para evitar duplicidade. Simulações respeitam o horário configurado e não criam mensagens. Ativar uma regra depois do horário diário inicia a execução no próximo evento elegível. Aniversários de 29/02 usam o próprio dia em anos bissextos.
+As rotinas disponíveis são pós-atendimento, satisfação, retorno, aniversário, inatividade e venda complementar. O serviço avalia as regras a cada minuto e processa a fila a cada cinco segundos. Usa os dados da unidade, fuso horário, autorização, intervalo entre mensagens e chave de evento para evitar duplicidade. Simulações respeitam o horário configurado e não criam mensagens. Após o horário configurado, a regra avalia os eventos elegíveis a cada minuto e recupera execuções perdidas desde sua ativação. Aniversários de 29/02 usam o próprio dia em anos bissextos.
 
 Modelos WABA com mídia ou parâmetros especiais de cabeçalho e botões precisam de contrato de envio adicional. Respostas inconclusivas ficam reservadas para conferência pelo protocolo, pois o comportamento de idempotência e a consulta de status do fornecedor ainda precisam ser comprovados.
 

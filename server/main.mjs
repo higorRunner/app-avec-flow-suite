@@ -2,6 +2,7 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { application } from './application.mjs';
+import { feedback } from './feedback.mjs';
 import { database } from './database.mjs';
 import { AppError, assert, digest, passwordHash, passwordMatches, secretBox, sessionToken, text } from './security.mjs';
 
@@ -9,10 +10,13 @@ const files = new Map([
   ['/', ['index.html','text/html; charset=utf-8']],
   ['/app.js',['app.js','text/javascript; charset=utf-8']],
   ['/style.css',['style.css','text/css; charset=utf-8']],
+  ['/avaliar',['feedback.html','text/html; charset=utf-8']],
+  ['/feedback.js',['feedback.js','text/javascript; charset=utf-8']],
+  ['/feedback.css',['feedback.css','text/css; charset=utf-8']],
 ]);
 const cookieName='flowsuite_session';
 
-export function createAppServer({ db, app, version='rebuild-1', secure=true }) {
+export function createAppServer({ db, app, survey, version='rebuild-1', secure=true }) {
   let readiness={ok:false,message:'Verificando o banco.'};
   const attempts=new Map();
   const cookie=(token,age)=>`${cookieName}=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${age}${secure?'; Secure':''}`;
@@ -68,6 +72,11 @@ export function createAppServer({ db, app, version='rebuild-1', secure=true }) {
       }
       const input=req.method==='GET'?Object.fromEntries(url.searchParams):await body(req);
       assert(input&&typeof input==='object'&&!Array.isArray(input),'Solicitação inválida.');
+      if(url.pathname.startsWith('/api/feedback/')&&survey){
+        const token=url.pathname.slice('/api/feedback/'.length);
+        assert(['GET','POST'].includes(req.method),'Método inválido.',405);
+        json(200,req.method==='GET'?await survey.inspect(token):await survey.answer(token,input));return;
+      }
       if(url.pathname==='/api/login'&&req.method==='POST'){
         const email=text(input.email,160).toLowerCase();
         const key=req.socket.remoteAddress+'|'+email;
@@ -119,8 +128,9 @@ export async function start(env=process.env) {
   const url=env.SUPABASE_URL,key=env.SUPABASE_SERVICE_ROLE_KEY;
   if(!url||!key)throw new Error('Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY no serviço do FlowSuite.');
   const db=database({url,key});
-  const app=application({db,secrets:secretBox(env.APP_SECRET||key),version:env.GIT_SHA||'rebuild-1'});
-  const {server,health}=createAppServer({db,app,secure:env.COOKIE_SECURE!=='false',version:env.GIT_SHA||'rebuild-1'});
+  const survey=feedback({db,secret:env.APP_SECRET||key,publicOrigin:env.PUBLIC_ORIGIN});
+  const app=application({db,secrets:secretBox(env.APP_SECRET||key),version:env.GIT_SHA||'rebuild-1',survey});
+  const {server,health}=createAppServer({db,app,survey,secure:env.COOKIE_SECURE!=='false',version:env.GIT_SHA||'rebuild-1'});
   const state=await health();
   if(!state.ok) throw new Error(state.message);
   const masters=await db.select('fs_users',{master:'eq.true',limit:1});

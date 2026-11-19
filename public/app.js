@@ -1,14 +1,15 @@
 const root=document.getElementById('app');
 const dialog=document.getElementById('dialog');
 const state={user:null,units:[],unit:null,data:null,integration:null,members:[],page:'home',tab:'connect',menu:false,
-  contacts:[],contactPage:0,contactSearch:'',selected:new Set(),sendMode:'test',channel:'',template:'',models:[]};
+  contacts:[],contactPage:0,contactSearch:'',selected:new Set(),sendMode:'test',channel:'',template:'',models:[],settings:null,avecReport:null,reportCode:'',reportPage:1};
 const labels={queued:'Na fila',processing:'Resultado inconclusivo',accepted:'Aceita pelo Clickmassa',sent:'Enviada',delivered:'Entregue',
   read:'Lida',failed:'Falha',skipped:'Ignorada',pending:'Solicitado',syncing:'Conectando',ready:'Atualizado',error:'Falha',unconfigured:'Pendente'};
 const types={post_service:'Pós-atendimento',csat:'Pesquisa de satisfação',return:'Sugestão de retorno',
   birthday:'Aniversário',inactive:'Clientes inativos',cross_sell:'Venda complementar'};
 const fieldChoices={'customer.name':'Nome do cliente','customer.phone':'Telefone do cliente','customer.email':'E-mail do cliente',
   'customer.birthday':'Nascimento','establishment.name':'Nome da unidade','service.name':'Nome do serviço',
-  'appointment.scheduled_at':'Data do agendamento','appointment.completed_at':'Conclusão do atendimento'};
+  'appointment.scheduled_at':'Data do agendamento','appointment.completed_at':'Conclusão do atendimento',
+  'feedback.url':'Link individual da pesquisa de satisfação'};
 const h=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmt=value=>value?new Intl.DateTimeFormat('pt-BR',{dateStyle:'short',timeStyle:'short',
   timeZone:state.data?.unit.timezone||'America/Sao_Paulo'}).format(new Date(value)):'—';
@@ -85,13 +86,15 @@ async function boot(){
   const slug=new URLSearchParams(location.search).get('unidade');
   if(state.user.master&&!slug){state.unit=null;state.page='home'}
   else state.unit=state.units.find(u=>u.slug===slug)||(!slug?state.units[0]:null);
-  if(state.unit){state.data=await api(unitPath('data'));state.page='dashboard'}
+  if(state.unit){state.data=await api(unitPath('data'));state.page='dashboard';
+    if(location.hash==='#settings'&&canManage()){state.settings=await api(unitPath('settings'));state.page='settings'}}
   render();
 }
 function navigation(){
   if(state.user.master&&!state.unit) return [['home','Unidades','▦']];
   return [['dashboard','Visão geral','◫'],['send','Envios','↗'],['rules','Automações','↻'],
-    ['contacts','Clientes','♙'],['catalog','Canais e modelos','▤'],['services','Serviços e agenda','◷'],['reports','Relatórios','▥']];
+    ['contacts','Clientes','♙'],['catalog','Canais e modelos','▤'],['services','Serviços e agenda','◷'],
+    ['feedback','Satisfação','☆'],['inventory','Estoque','▧'],['reports','Relatórios','▥'],...(canManage()?[['settings','Configurações','⚙']]:[])];
 }
 function render(){
   if(!state.user){renderLogin();return}
@@ -127,6 +130,9 @@ function content(){
     case 'contacts':return contactsPage();
     case 'services':return servicesPage();
     case 'reports':return reportsPage();
+    case 'feedback':return feedbackPage();
+    case 'inventory':return inventoryPage();
+    case 'settings':return settingsPage();
     default:return dashboard();
   }
 }
@@ -209,7 +215,8 @@ function integrationPage(){
     ${input('Token AVEC','avec_token','password','','autocomplete="new-password" '+(!info.avec?'required':''))}
     <p class="hint">Cole somente o valor do token, sem o prefixo Bearer. A consulta usa o relatório de clientes 0004.</p>
     ${info.avec?'<p class="hint">Token cadastrado. Preencha para substituir.</p>':''}
-    <div class="actions"><button class="btn primary" type="submit">Salvar e consultar clientes</button></div>
+    <div class="actions"><button class="btn primary" type="submit">Salvar e consultar clientes</button>
+     <a class="btn" href="${h(unitLink(u))}#settings">Configurar sincronização completa ↗</a></div>
    </form>
    ${columns.length?`<details><summary>Escolher os campos para importar clientes</summary><form id="mapping-form" class="stack">
      <p class="hint">Selecione as colunas retornadas pela AVEC. O consentimento será definido individualmente no cadastro de clientes.</p>
@@ -286,7 +293,7 @@ function sendContent(){
 }
 function modelFields(template,mode,mapping={}){
   if(!template)return '';
-  const allowed=Object.entries(fieldChoices).filter(([key])=>mode==='rule'||(!key.startsWith('appointment.')&&key!=='service.name'));
+  const allowed=Object.entries(fieldChoices).filter(([key])=>mode==='rule'||(!key.startsWith('appointment.')&&key!=='service.name'&&key!=='feedback.url'));
   return `<div class="preview" id="message-preview">${h(template.body)}</div>`+template.variables.map((key,index)=>
     mode==='test'?input('Valor do campo '+key,'param-'+index,'text','','required maxlength="1024" data-param'):
     select('Informação do campo '+key,'variable-'+index,[['','Selecione a informação'],...allowed],mapping[key]||'','required data-variable="'+h(key)+'"')).join('');
@@ -300,7 +307,8 @@ function jobTable(jobs){
 }
 function reportsPage(){
   return `${head('Relatórios de envios','O estado Aceita indica que o Clickmassa recebeu a mensagem. A entrega é confirmada no atendimento.',button('Atualizar','refresh','','small'))}
-   <section class="card stack">${jobTable(state.data.jobs)}<p class="hint">Até 100 mensagens recentes. O relatório atualiza automaticamente.</p></section>`;
+   <div class="stack"><section class="card stack"><div id="report-jobs">${jobTable(state.data.jobs)}</div><p class="hint">Até 100 mensagens recentes. O relatório atualiza automaticamente.</p></section>
+   ${canManage()?reportExplorer():''}</div>`;
 }
 function contactsPage(){
   return `${head('Clientes','Gerencie os dados e a autorização de contato.',canSend()?button('＋ Novo cliente','new-contact','','primary'):'')}
@@ -310,20 +318,126 @@ function contactsPage(){
 function contactTable(){
   const rows=state.contacts.slice(0,25);
   return `${rows.length?table(['Cliente','Telefone','Autorização','Ação'],rows.map(c=>[
-    h(c.name),h(c.phone),badge(c.consent?'Autorizado':'Sem autorização',c.consent?'ok':'warn'),
-    canSend()?button('Editar','edit-contact','data-id="'+c.id+'"','small'):'—',
+    h(c.name),h(c.phone||'Telefone não informado'),badge(c.consent?'Autorizado':'Sem autorização',c.consent?'ok':'warn'),
+    `<div class="actions">${button('Histórico','contact-history','data-id="'+c.id+'"','small')}${canSend()?button('Editar','edit-contact','data-id="'+c.id+'"','small'):''}</div>`,
   ])):empty('Nenhum cliente encontrado','Cadastre um cliente ou peça ao administrador a importação AVEC.')}
    <div class="pager">${button('Anterior','contacts-prev',state.contactPage?'':'disabled','small')}<small>Página ${state.contactPage+1}</small>${button('Próxima','contacts-next',state.contacts.length>25?'':'disabled','small')}</div>`;
 }
 function servicesPage(){
   const d=state.data;
-  return `${head('Serviços e agenda','Os atendimentos concluídos alimentam as regras de relacionamento.')}
+  return `${head('Serviços e agenda','Serviços e agendamentos AVEC alimentam as regras de relacionamento.',canManage()?button('Sincronizar AVEC','avec-sync','','primary'):'')}
+   ${avecSummary()}
    <div class="stack"><section class="card stack"><div class="actions between"><h2>Serviços</h2>${canManage()?button('＋ Serviço','new-service','','small'):''}</div>
-    ${d.services.length?table(['Serviço','Prazo de retorno'],d.services.map(s=>[h(s.name),s.return_days?h(s.return_days)+' dias':'—'])):empty('Cadastre seus serviços','Defina o prazo médio para sugerir o retorno do cliente.')}</section>
+    ${d.services.length?table(['Serviço','Origem','Prazo de retorno','Ação'],d.services.map(s=>[h(s.name),badge(s.external_id?'AVEC':'Manual'),s.return_days?h(s.return_days)+' dias':'Não definido',canManage()?button('Definir retorno','service-return','data-id="'+s.id+'"','small'):'—'])):empty('Aguardando serviços','Ative a sincronização AVEC nas configurações para importar o catálogo.')}</section>
     <section class="card stack"><div class="actions between"><h2>Atendimentos</h2>${canSend()?button('＋ Atendimento','new-appointment','','small'):''}</div>
-     ${d.appointments.length?table(['Data','Cliente','Serviço','Estado'],d.appointments.map(a=>[h(fmt(a.scheduled_at)),
-      h(d.contacts.find(c=>c.id===a.contact_id)?.name||'Cliente'),h(d.services.find(s=>s.id===a.service_id)?.name),
-      badge(a.completed_at?'Concluído':'Agendado',a.completed_at?'ok':'')])):empty('Nenhum atendimento registrado','Registre o serviço e a data de conclusão para alimentar as rotinas.')}</section></div>`;
+     ${d.appointments.length?table(['Data','Cliente','Serviço / profissional','Estado','Origem'],d.appointments.map(a=>[h(fmt(a.scheduled_at)),
+      h(a.contact_name||d.contacts.find(c=>c.id===a.contact_id)?.name||'Cliente'),h(d.services.find(s=>s.id===a.service_id)?.name)+`<p class="hint">${h(a.professional_name||'')}</p>`,
+      appointmentState(a),badge(a.external_id||a.source==='avec'?'AVEC':'Manual')])):empty('Nenhum atendimento sincronizado','Sincronize a AVEC e confira o período de histórico nas configurações.')}</section></div>`;
+}
+function appointmentState(a){return badge(a.canceled?'Cancelado':a.completed_at?'Concluído':a.arrived_at?'Cliente chegou':'Agendado',a.canceled?'warn':a.completed_at?'ok':'')}
+function avecSummary(){
+  const u=state.data.unit,summary=u.avec_summary||{};
+  return `<section class="card sync-summary"><div class="actions between"><div><strong>Integração AVEC</strong>
+   <p class="hint">${h(u.avec_error||(u.avec_checked_at?'Última consulta: '+fmt(u.avec_checked_at):'Configure a sincronização para trazer os dados da unidade.'))}</p></div>${badge(u.avec_state||'unconfigured',u.avec_state==='ready'?'ok':u.avec_state==='error'?'error':'warn')}</div>
+   ${summary.warning?`<p class="hint">${h(summary.warning)}</p>`:''}
+   ${canManage()?button('Ajustar sincronização','go-settings','','small'):''}</section>`;
+}
+function feedbackPage(){
+  const feedback=state.data.feedback||{},responses=feedback.responses||[];
+  return `${head('Satisfação dos clientes','Acompanhe as avaliações recebidas nas pesquisas enviadas após o atendimento.',button('Atualizar','refresh','','small'))}
+   <div class="metrics">${metric('Pesquisas geradas',feedback.invited??0)}${metric('Respostas',feedback.total??responses.length)}
+    ${metric('Nota média',feedback.average===null||feedback.average===undefined?'—':Number(feedback.average).toFixed(1)+' / 5')}${metric('Satisfeitos',feedback.satisfied===null||feedback.satisfied===undefined?'—':feedback.satisfied+'%')}</div>
+   <section class="card stack"><h2>Avaliações recebidas</h2>${responses.length?table(['Recebida em','Cliente','Nota','Comentário'],responses.map(r=>[
+    h(fmt(r.answered_at||r.created_at)),h(r.contact_name||state.data.contacts.find(c=>c.id===r.contact_id)?.name||'Cliente'),badge(r.score+' / 5',r.score>=4?'ok':r.score<=2?'error':'warn'),h(r.comment||'—'),
+   ])):empty('Aguardando avaliações','Crie uma rotina de satisfação para o dia seguinte e inclua o link individual da pesquisa em um campo do modelo.')}
+   <p class="hint">Cada atendimento recebe seu próprio link. Notas 4 e 5 são consideradas satisfeitas.</p></section>`;
+}
+function inventoryPage(){
+  const products=state.data.products||[];
+  return `${head('Estoque AVEC','Acompanhe os produtos e os itens abaixo do mínimo definido no AVEC.',canManage()?button('Sincronizar AVEC','avec-sync','','primary'):'')}
+   ${avecSummary()}<section class="card stack"><div class="actions between"><h2>Produtos</h2><span class="badge warn">${products.filter(p=>p.low_stock).length} abaixo do mínimo</span></div>
+    ${products.length?table(['Produto','Quantidade','Mínimo','Estado'],products.map(p=>[h(p.name),h(p.quantity??'—'),h(p.minimum??'—'),badge(p.low_stock?'Estoque baixo':'Dentro do mínimo',p.low_stock?'warn':'ok')])):empty('Nenhum produto sincronizado','Os relatórios de estoque disponíveis para a unidade aparecerão após a sincronização.')}
+    ${canManage()?button('Configurar avisos de estoque','go-settings','','small'):''}</section>`;
+}
+function alertFields(kind,templateId,mapping={}){
+  const template=state.data.templates.find(t=>t.id===templateId);
+  if(!template)return '<p class="hint">Selecione um modelo aprovado para definir o conteúdo do aviso.</p>';
+  const fields=kind==='arrival'?[['professional.name','Nome do profissional'],['customer.name','Nome do cliente'],['service.name','Serviço'],['appointment.scheduled_at','Horário do agendamento'],['establishment.name','Nome da unidade']]:
+    [['professional.name','Nome do profissional'],['product.name','Nome do produto'],['product.quantity','Quantidade atual'],['product.minimum','Estoque mínimo'],['establishment.name','Nome da unidade']];
+  return `<div class="preview">${h(template.body)}</div>`+template.variables.map((key,index)=>select('Informação do campo '+key,kind+'-field-'+index,[['','Selecione'],...fields],mapping[key]||'','data-alert-variable="'+h(key)+'" data-kind="'+kind+'"')).join('');
+}
+function settingsPage(){
+  if(!canManage())return empty('Acesso restrito','As configurações são administradas pelo gestor da unidade.');
+  const settings=state.settings;
+  if(!settings)return head('Configurações','Carregando configurações da unidade…');
+  const u=settings.unit||state.data.unit,c=u.avec_config||{},alerts=settings.alerts||{},professionals=settings.professionals||[];
+  const channels=readyChannels().filter(ch=>ch.type==='waba'),models=readyModels(alerts.channel_id),caps=u.avec_summary?.capabilities||{};
+  return `${head('Configurações da unidade','Defina a sincronização, os retornos e os avisos da operação.',button('Sincronizar AVEC agora','avec-sync','','primary'))}
+   <div class="stack"><form id="avec-settings-form" class="card stack"><h2>Sincronização AVEC</h2>
+    <p class="hint">O token é cadastrado pelo administrador master. Os dados são consultados diretamente na AVEC e usados nas rotinas desta unidade.</p>
+    <label class="check"><input type="checkbox" name="enabled" ${c.enabled?'checked':''}>Atualizar os dados AVEC automaticamente</label>
+    <div class="form-grid">${select('Frequência de atualização','interval_minutes',[[5,'A cada 5 minutos'],[15,'A cada 15 minutos'],[30,'A cada 30 minutos'],[60,'A cada hora']],c.interval_minutes||15)}
+     ${input('Dias de histórico para sincronizar','history_days','number',c.history_days??90,'required min="1" max="730"')}
+     ${input('Dias futuros da agenda','future_days','number',c.future_days??30,'required min="1" max="180"')}
+     ${input('ID da unidade AVEC (token de franquia)','salon_id','text',c.salon_id||'','maxlength="40" placeholder="Opcional para token de unidade"')}</div>
+    <label class="check"><input type="checkbox" name="auto_import" ${c.auto_import!==false?'checked':''}>Importar clientes, serviços e agendamentos para as rotinas</label>
+    <p class="hint">As autorizações de contato existentes são mantidas. Clientes novos ficam sem autorização até a revisão no cadastro. A integração usa as informações que os relatórios disponibilizam, respeitando o período escolhido.</p>
+    <button class="btn primary" type="submit">Salvar sincronização</button></form>
+   <section class="card stack"><h2>Avisos aos profissionais</h2>
+    <p class="hint">Cadastre o WhatsApp de cada profissional abaixo. Os avisos usam o canal e os modelos aprovados selecionados aqui.</p>
+    <p class="alert">A chegada depende de o AVEC informar explicitamente que o cliente chegou. Um horário agendado não gera aviso de chegada.${caps.arrival===false?' O relatório atual ainda não disponibilizou esse evento.':''}</p>
+    <form id="alerts-settings-form" class="stack">
+     ${select('Canal dos avisos','alert-channel',[['','Selecione o canal'],...channels.map(ch=>[ch.id,ch.name])],alerts.channel_id)}
+     <div class="grid2"><div class="stack"><label class="check"><input type="checkbox" name="arrival_enabled" ${alerts.arrival_enabled?'checked':''}>Avisar quando o cliente chegar</label>
+      ${select('Modelo de chegada','arrival-template',[['','Selecione'],...models.map(t=>[t.id,t.name])],alerts.arrival_template_id)}
+      <div id="arrival-fields" class="stack">${alertFields('arrival',alerts.arrival_template_id,alerts.arrival_mapping)}</div></div>
+      <div class="stack"><label class="check"><input type="checkbox" name="stock_enabled" ${alerts.stock_enabled?'checked':''}>Avisar sobre estoque baixo</label>
+      ${select('Modelo de estoque baixo','stock-template',[['','Selecione'],...models.map(t=>[t.id,t.name])],alerts.stock_template_id)}
+      <div id="stock-fields" class="stack">${alertFields('stock',alerts.stock_template_id,alerts.stock_mapping)}</div>
+      ${input('Intervalo entre avisos do mesmo produto (dias)','stock_cooldown_days','number',alerts.stock_cooldown_days??1,'required min="1" max="365"')}</div></div>
+     <button class="btn primary" type="submit">Salvar avisos</button></form>
+    <h3>Profissionais sincronizados</h3>${professionals.length?table(['Profissional','WhatsApp','Avisos','Ação'],professionals.map(p=>[h(p.name),h(p.phone||'Não cadastrado'),badge(p.enabled?'Habilitados':'Desativados',p.enabled?'ok':''),button('Configurar','professional','data-id="'+p.id+'"','small')])):empty('Aguardando profissionais','Sincronize os dados AVEC. Depois, informe o telefone dos profissionais que receberão os avisos.')}
+   </section>
+   <section class="card stack"><h2>Prazos de retorno por serviço</h2><p class="hint">Informe o intervalo médio de cada serviço. A rotina de sugestão de retorno usa esse prazo; quando disponível, o prazo retornado pela AVEC é importado.</p>
+    ${(settings.services||state.data.services).length?table(['Serviço','Retorno médio','Ação'],(settings.services||state.data.services).map(s=>[h(s.name),s.return_days?h(s.return_days)+' dias':'Não definido',button('Definir retorno','service-return','data-id="'+s.id+'"','small')])):empty('Nenhum serviço importado','Sincronize o catálogo AVEC para configurar os retornos.')}
+   </section></div>`;
+}
+function reportExplorer(){
+  const catalog=state.settings?.report_catalog||[];
+  return `<section class="card stack"><h2>Consultar relatórios AVEC</h2><p class="hint">Escolha um relatório e preencha os filtros. A consulta é somente leitura e exibe até 250 linhas por página.</p>
+   ${!state.settings?button('Carregar relatórios disponíveis','load-reports','','small'):`<form id="avec-report-form" class="stack">
+    ${select('Relatório AVEC','report-code',[['','Selecione o relatório'],...catalog.map(r=>[r.code,r.name])],state.reportCode,'required')}
+    <div id="report-parameters" class="form-grid">${reportParameters()}</div><button class="btn primary" type="submit">Consultar relatório</button></form>`}
+   <div id="avec-report-result">${reportResult()}</div></section>`;
+}
+function reportParameters(){
+  const report=state.settings?.report_catalog?.find(r=>r.code===state.reportCode);
+  return (report?.params||report?.query||[]).filter(p=>!['page','limit'].includes(p.key)).map(p=>{
+    const name='report-param-'+p.key,label=p.label||p.key;
+    if(p.key==='servico_id')return select(label,name,[['','Todos os serviços'],...state.data.services.filter(s=>s.external_id).map(s=>[s.external_id,s.name])]);
+    if(p.key==='profissional_id')return select(label,name,[['','Todos os profissionais'],...(state.settings?.professionals||[]).map(s=>[s.external_id,s.name])]);
+    if(p.options?.length)return select(label,name,[['','Todos'],...p.options.map(o=>Array.isArray(o)?o:[o.value??o.id,o.label??o.name])]);
+    return input(label,name,p.type==='date'?'date':p.type==='number'?'number':'text','','data-report-key="'+h(p.key)+'" placeholder="'+h(p.type==='select'?'ID opcional':p.type==='date'?'':'Opcional')+'"');
+  }).join('')||'<p class="hint">Este relatório não exige filtros adicionais.</p>';
+}
+function reportResult(){
+  const report=state.avecReport;
+  if(!report)return '';
+  const columns=report.columns||Object.keys(report.rows?.[0]||{}),rows=report.rows||[];
+  return `<div class="stack"><p class="hint">Página ${state.reportPage} · ${rows.length} linha(s) nesta página.</p>
+   ${rows.length?table(columns,rows.map(row=>columns.map(key=>h(row[key]===null||row[key]===undefined?'—':typeof row[key]==='object'?'Conteúdo composto':row[key])))):empty('Nenhum resultado neste filtro','Confira o período e os filtros informados.')}
+   <div class="pager">${button('Página anterior','report-prev',state.reportPage>1?'':'disabled','small')}${button('Próxima página','report-next',report.has_more?'':'disabled','small')}</div></div>`;
+}
+async function queryReport(form,page=1){
+  const values=new FormData(form),params={page,limit:250};
+  for(const [key,value]of values){
+    if(!key.startsWith('report-param-')||!value)continue;
+    const input=form.elements.namedItem(key);
+    params[key.slice(13)]=input.type==='date'?value.split('-').reverse().join('/'):value;
+  }
+  state.avecReport=await api(unitPath('avec-report'),'POST',{code:values.get('report-code'),params});
+  state.reportPage=page;
+  document.getElementById('avec-report-result').innerHTML=reportResult();
 }
 function rulesPage(){
   return `${head('Automações','Regras avaliadas a cada minuto, com horário e consentimento da unidade.',canManage()?button('＋ Nova rotina','new-rule','','primary'):'')}
@@ -398,7 +512,7 @@ function ruleDialog(rule={}){
    ${input('Nome da rotina','name','text',rule.name,'required maxlength="120"')}
    ${select('Quando executar','type',Object.entries(types),rule.type||'post_service','required')}
    <p class="hint" id="rule-help"></p>
-   <div class="form-grid">${input('Intervalo em dias','delay_days','number',rule.delay_days??0,'required min="0" max="3650"')}
+   <div class="form-grid">${input('Intervalo em dias','delay_days','number',rule.delay_days??(rule.type==='csat'?1:0),'required min="0" max="3650"')}
     ${input('Horário da unidade','send_time','time',(rule.send_time||'09:00').slice(0,5),'required')}</div>
    ${input('Intervalo mínimo entre mensagens ao cliente (dias)','cooldown_days','number',rule.cooldown_days??7,'required min="0" max="3650"')}
    ${select('Serviço realizado','service_id',[['','Todos os serviços'],...state.data.services.map(s=>[s.id,s.name])],rule.service_id)}
@@ -415,7 +529,7 @@ function updateRuleType(){
   const form=document.getElementById('rule-form');
   if(!form)return;
   const type=form.elements.type.value;
-  const help={post_service:'Mensagem após a conclusão do atendimento.',csat:'Pesquisa após concluir o serviço.',
+  const help={post_service:'Mensagem após a conclusão confirmada do atendimento no AVEC.',csat:'Use 1 dia para enviar no dia seguinte. Inclua o Link individual da pesquisa de satisfação em um campo do modelo para receber as avaliações no painel.',
     return:'Usa o prazo de retorno do serviço. O intervalo desta regra serve como alternativa.',
     birthday:'Zero dias envia na data de aniversário. Nascidos em 29/02 recebem no próprio dia em anos bissextos.',
     inactive:'Conta os dias desde o último serviço concluído e verifica se há agendamento futuro.',
@@ -433,7 +547,7 @@ function updatePreview(form){
   if(!preview||!template)return;
   const samples={'customer.name':'Mariana','customer.phone':'+55 11 99999-0000','customer.email':'mariana@exemplo.com',
     'customer.birthday':'18/11','service.name':'Corte','establishment.name':state.unit.name,
-    'appointment.scheduled_at':'18/11 às 14:00','appointment.completed_at':'18/11 às 15:00'};
+    'appointment.scheduled_at':'18/11 às 14:00','appointment.completed_at':'18/11 às 15:00','feedback.url':location.origin+'/avaliar/link-individual'};
   const test=form.id==='send-form'&&state.sendMode==='test';
   preview.textContent=template.body.replace(/\{\{\s*([^{}]+?)\s*\}\}/g,(_,key)=>{
     const index=template.variables.indexOf(key);
@@ -517,6 +631,38 @@ async function action(name,btn){
       return;
     case 'go-send':
       state.page='send';state.menu=false;render();return;
+    case 'go-settings':
+      state.settings=await api(unitPath('settings'));state.page='settings';state.menu=false;render();return;
+    case 'avec-sync':
+      await api(unitPath('avec-sync'),'POST',{});toast('Sincronização AVEC iniciada. Acompanhe o estado da conexão.');
+      await refreshData();renderMain();return;
+    case 'professional': {
+      const professional=state.settings.professionals.find(p=>p.id===id);
+      openDialog('Avisos · '+professional.name,`<form id="professional-form" class="stack" data-id="${h(id)}">
+       ${input('WhatsApp do profissional com DDI','phone','tel',professional.phone||'','placeholder="+55 11 99999-0000" maxlength="30"')}
+       <label class="check"><input type="checkbox" name="enabled" ${professional.enabled?'checked':''}>Habilitar avisos operacionais para este profissional</label>
+       <p class="hint">Confirme o número com o profissional. Os avisos usam os modelos e o canal configurados nesta unidade.</p>${footer('Salvar profissional')}</form>`);return;
+    }
+    case 'service-return': {
+      const service=state.data.services.find(s=>s.id===id);
+      openDialog('Retorno · '+service.name,`<form id="service-return-form" class="stack" data-id="${h(id)}">
+       ${input('Prazo médio de retorno (dias)','return_days','number',service.return_days||'','min="1" max="3650"')}
+       <p class="hint">A rotina de sugestão de retorno considera a conclusão deste serviço e o prazo informado. Deixe vazio para usar o intervalo da rotina.</p>${footer('Salvar prazo')}</form>`);return;
+    }
+    case 'contact-history': {
+      const history=await api(unitPath('contacts')+'/'+id+'/history');
+      const appointments=history.appointments||[],feedback=Array.isArray(history.feedback)?history.feedback:history.feedback?.responses||[];
+      openDialog('Histórico · '+history.contact.name,`<div class="stack"><p class="hint">${h(history.contact.phone)} · Histórico disponível no período sincronizado.</p>
+       <h3>Serviços e agendamentos</h3>${appointments.length?table(['Data','Serviço','Estado'],appointments.map(a=>[h(fmt(a.scheduled_at)),h(a.service_name||state.data.services.find(s=>s.id===a.service_id)?.name||'Serviço'),appointmentState(a)])):empty('Nenhum atendimento neste período','Amplie o histórico nas configurações e sincronize novamente.')}
+       <h3>Mensagens</h3>${jobTable(history.jobs||[])}<h3>Avaliações</h3>${feedback.length?table(['Data','Nota','Comentário'],feedback.map(r=>[h(fmt(r.answered_at)),h(r.score)+' / 5',h(r.comment||'—')])):'<p class="hint">Nenhuma avaliação recebida.</p>'}
+       ${button('Fechar','close-dialog','','primary')}</div>`);return;
+    }
+    case 'load-reports':
+      state.settings=await api(unitPath('settings'));renderMain();return;
+    case 'report-prev':
+      await queryReport(document.getElementById('avec-report-form'),Math.max(1,state.reportPage-1));return;
+    case 'report-next':
+      await queryReport(document.getElementById('avec-report-form'),state.reportPage+1);return;
     case 'refresh':
       await refreshData();render();toast('Dados atualizados.');return;
     case 'new-contact':
@@ -595,6 +741,28 @@ async function submit(form){
       dialog.close();await refreshData();state.contactPage=0;await loadContacts();toast('Cliente salvo.');return;
     case 'service-form':
       await api(unitPath('services'),'POST',data);dialog.close();await refreshData();render();return;
+    case 'service-return-form': {
+      const service=state.data.services.find(s=>s.id===form.dataset.id);
+      await api(unitPath('services'),'POST',{id:service.id,name:service.name,return_days:data.return_days});
+      dialog.close();await refreshData();if(state.settings)state.settings=await api(unitPath('settings'));render();toast('Prazo de retorno salvo.');return;
+    }
+    case 'professional-form':
+      await api(unitPath('professionals'),'POST',{id:form.dataset.id,phone:data.phone,enabled:f.has('enabled')});
+      dialog.close();state.settings=await api(unitPath('settings'));await refreshData();render();toast('Profissional atualizado.');return;
+    case 'avec-settings-form':
+      await api(unitPath('settings'),'POST',{avec:{enabled:f.has('enabled'),auto_import:f.has('auto_import'),interval_minutes:Number(data.interval_minutes),
+        history_days:Number(data.history_days),future_days:Number(data.future_days),salon_id:data.salon_id,consent_new:false}});
+      state.settings=await api(unitPath('settings'));await refreshData();renderMain();toast('Sincronização configurada.');return;
+    case 'alerts-settings-form': {
+      const mappings={arrival:{},stock:{}};
+      for(const el of form.querySelectorAll('[data-alert-variable]'))mappings[el.dataset.kind][el.dataset.alertVariable]=el.value;
+      await api(unitPath('settings'),'POST',{alerts:{channel_id:data['alert-channel']||null,arrival_enabled:f.has('arrival_enabled'),stock_enabled:f.has('stock_enabled'),
+        arrival_template_id:data['arrival-template']||null,stock_template_id:data['stock-template']||null,
+        arrival_mapping:mappings.arrival,stock_mapping:mappings.stock,stock_cooldown_days:Number(data.stock_cooldown_days)}});
+      state.settings=await api(unitPath('settings'));renderMain();toast('Avisos configurados.');return;
+    }
+    case 'avec-report-form':
+      await queryReport(form);return;
     case 'appointment-form':
       for(const key of ['scheduled_at','completed_at']) data[key]=data[key]?new Date(data[key]).toISOString():null;
       await api(unitPath('appointments'),'POST',data);dialog.close();await refreshData();render();toast('Atendimento registrado.');return;
@@ -623,6 +791,7 @@ root.addEventListener('click',async e=>{
   try{
     if(page){
       state.page=page.dataset.page;state.menu=false;
+      if(state.page==='settings')state.settings=await api(unitPath('settings'));
       if(state.unit)await refreshData();render();
       const heading=document.querySelector('#main h1');if(heading){heading.tabIndex=-1;heading.focus({preventScroll:true})}
       return;
@@ -672,7 +841,25 @@ document.addEventListener('change',e=>{
     form.querySelector('#rule-fields').innerHTML='';
   }
   if(el.id==='rule-template')form.querySelector('#rule-fields').innerHTML=modelFields(state.data.templates.find(t=>t.id===el.value),'rule');
-  if(form?.id==='rule-form'&&el.name==='type')updateRuleType();
+  if(form?.id==='rule-form'&&el.name==='type'){
+    if(!form.dataset.id&&el.value==='csat')form.elements.delay_days.value='1';
+    updateRuleType();
+  }
+  if(el.id==='alert-channel'){
+    const models=readyModels(el.value);
+    for(const kind of ['arrival','stock']){
+      form.elements[kind+'-template'].innerHTML=options([['','Selecione'],...models.map(t=>[t.id,t.name])]);
+      document.getElementById(kind+'-fields').innerHTML=alertFields(kind,'');
+    }
+  }
+  if(el.id==='arrival-template'||el.id==='stock-template'){
+    const kind=el.id.split('-')[0];document.getElementById(kind+'-fields').innerHTML=alertFields(kind,el.value);
+  }
+  if(el.id==='report-code'){
+    state.reportCode=el.value;state.avecReport=null;state.reportPage=1;
+    document.getElementById('report-parameters').innerHTML=reportParameters();
+    document.getElementById('avec-report-result').innerHTML='';
+  }
   if(el.hasAttribute('data-variable'))updatePreview(form);
 });
 let searchTimer;
@@ -716,7 +903,10 @@ setInterval(async()=>{
       if(state.integrationPendingRender&&!editing){state.integrationPendingRender=false;renderMain()}
       else if(document.getElementById('integration-status'))document.getElementById('integration-status').innerHTML=integrationStatus();
       updateDiagnostics();
-    }else if(state.unit&&['dashboard','reports'].includes(state.page)){
+    }else if(state.unit&&state.page==='reports'){
+      await refreshData();
+      const target=document.getElementById('report-jobs');if(target)target.innerHTML=jobTable(state.data.jobs);
+    }else if(state.unit&&['dashboard','feedback','inventory','services'].includes(state.page)&&!document.activeElement?.closest('form')){
       await refreshData();renderMain();
     }
   }catch{}finally{polling=false}

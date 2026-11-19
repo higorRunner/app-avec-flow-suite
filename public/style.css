@@ -924,3 +924,35 @@ dialog::backdrop {
   background:#102b36;
   color:#e1eeee;
 }
+
+.sync-summary {
+  margin-bottom:20px;
+  display:grid;
+  gap:12px;
+}
+
+.sync-summary > .btn {
+  justify-self:start;
+}
+
+#report-parameters:empty {
+  display:none;
+}
+
+#avec-report-result .table-scroll {
+  max-height:560px;
+  overflow:auto;
+}
+
+#avec-report-result th {
+  position:sticky;
+  top:0;
+  background:#edf3f2;
+}
+
+#alerts-settings-form .grid2 > .stack {
+  padding:16px;
+  border:1px solid var(--line);
+  border-radius:10px;
+  align-content:start;
+}

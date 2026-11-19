@@ -26,6 +26,7 @@ BEGIN
       'update_integration_credentials','grant_membership_by_email','verify_tenant_references'))
   LOOP EXECUTE format('DROP FUNCTION IF EXISTS %s CASCADE',fn.signature); END LOOP;
   FOREACH table_name IN ARRAY ARRAY[
+    'fs_feedback','fs_alert_settings','fs_avec_records','fs_professionals',
     'fs_events','fs_jobs','fs_rules','fs_appointments','fs_services','fs_contacts','fs_templates','fs_channels',
     'fs_credentials','fs_memberships','fs_sessions','fs_users','fs_units','fs_runtime',
     'fs_clickmassa_senders','fs_integration_settings','avec_report_snapshots','integration_logs',
