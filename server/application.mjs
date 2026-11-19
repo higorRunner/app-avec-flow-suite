@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { assert, AppError, text, phone, uuid, passwordHash } from './security.mjs';
 import { readCatalog, senderEndpoint, messagePayload, sendMessage, ProviderError } from './providers/clickmassa.mjs';
 import { apiBase, DEFAULT_API_BASE } from './providers/http.mjs';
-import { fetchReportAll, AvecError } from './providers/avec.mjs';
+import { fetchReportAll, AvecError, avecBirthday } from './providers/avec.mjs';
 import { candidates, ruleTypes } from './routines.mjs';
 
 const eq = value => 'eq.' + value;
@@ -10,7 +10,8 @@ const fields = ['customer.name','customer.phone','customer.email','customer.birt
   'appointment.scheduled_at','appointment.completed_at','establishment.name'];
 const safeUnit = ({ avec_sample, ...unit }) => ({ ...unit, sample_columns:Object.keys(avec_sample?.[0]||{}) });
 
-export function application({ db, secrets, catalog = readCatalog, send = sendMessage, report = fetchReportAll }) {
+export function application({ db, secrets, catalog = readCatalog, send = sendMessage, report = fetchReportAll,
+  version = process.env.GIT_SHA || 'desenvolvimento' }) {
   const busy = new Set();
   let ticking=false;
 
@@ -26,6 +27,15 @@ export function application({ db, secrets, catalog = readCatalog, send = sendMes
   }
   async function event(unit,event,state,detail) {
     await db.insert('fs_events',{unit_id:unit,event,state,detail});
+  }
+  function trace(unit,provider) {
+    return async info=>{
+      const {state='info',...data}=info;
+      const detail={provider,version,reader:'avec-report-envelope-v2',...data};
+      console.log('Diagnóstico FlowSuite',JSON.stringify({unit,...detail}));
+      try { await event(unit,'diagnostic',state,JSON.stringify(detail)); }
+      catch { console.error('Não foi possível persistir o diagnóstico da integração.'); }
+    };
   }
   async function access(user,unit,write=false,manage=false) {
     const record=await one('fs_units',{id:eq(uuid(unit))});
@@ -48,7 +58,7 @@ export function application({ db, secrets, catalog = readCatalog, send = sendMes
       db.select('fs_appointments',{unit_id:eq(id),order:'scheduled_at.desc',limit:100}),
       db.select('fs_rules',{unit_id:eq(id),order:'name'}),
       db.select('fs_jobs',{unit_id:eq(id),order:'created_at.desc',limit:100}),
-      db.select('fs_events',{unit_id:eq(id),order:'created_at.desc',limit:30}),
+      db.select('fs_events',{unit_id:eq(id),event:'neq.diagnostic',order:'created_at.desc',limit:30}),
     ]);
     return {unit:safeUnit(unit),channels,templates,contacts,services,appointments,rules,jobs,events};
   }
@@ -57,24 +67,33 @@ export function application({ db, secrets, catalog = readCatalog, send = sendMes
     const unit=await access(user,id);
     const account=await credential(id,'catalog');
     const credentials=await db.select('fs_credentials',{unit_id:eq(id),select:'kind'});
+    const rows=await db.select('fs_events',{unit_id:eq(id),event:'eq.diagnostic',order:'created_at.desc,id.desc',limit:100});
+    const diagnostics=rows.flatMap(row=>{
+      try { return [{id:row.id,created_at:row.created_at,state:row.state,...JSON.parse(row.detail)}]; }
+      catch { return []; }
+    });
     return {unit:safeUnit(unit),email:account?.email||'',base_url:account?.baseUrl||DEFAULT_API_BASE,avec:credentials.some(c=>c.kind==='avec'),
+      diagnostics,version,reader:'avec-report-envelope-v2',
       channels:await db.select('fs_channels',{unit_id:eq(id),order:'name'}),
       templates:await db.select('fs_templates',{unit_id:eq(id),order:'name'})};
   }
   async function synchronize(id) {
     if(busy.has(id)) return;
     busy.add(id);
+    const onTrace=trace(id,'Clickmassa');
     try {
       const unit=await one('fs_units',{id:eq(id),active:'eq.true'});
       if(!unit) return;
       const account=await credential(id,'catalog');
       assert(account,'Cadastre a conta Clickmassa.');
       await db.update('fs_units',{id:eq(id)},{sync_state:'syncing',sync_error:null});
-      const result=await catalog({...account,tenantId:unit.catalog_tenant});
+      const result=await catalog({...account,tenantId:unit.catalog_tenant,onTrace});
       await db.rpc('fs_catalog_commit',{p_unit:id,p_channels:result.channels,p_templates:result.templates,p_tenant:result.tenantId});
+      await onTrace({stage:'completed',state:'ok',channels:result.channels.length,templates:result.templates.length});
       await event(id,'catalog','ok',`${result.channels.length} canais e ${result.templates.length} modelos importados.`);
     } catch(error) {
       const detail=error instanceof ProviderError||error instanceof AppError?error.message:'Confira a conta Clickmassa e o formato do catálogo.';
+      await onTrace({stage:'failed',state:'error',message:detail});
       await db.update('fs_units',{id:eq(id)},{sync_state:'error',sync_error:detail});
       await event(id,'catalog','error',detail);
     } finally {busy.delete(id)}
@@ -84,20 +103,23 @@ export function application({ db, secrets, catalog = readCatalog, send = sendMes
     const key='avec:'+id;
     if(busy.has(key)) return;
     busy.add(key);
+    const onTrace=trace(id,'AVEC');
     try {
       await db.update('fs_units',{id:eq(id)},{avec_state:'syncing',avec_error:null});
       const value=await credential(id,'avec');
       assert(value?.token,'Cadastre o token AVEC.');
-      const result=await report({code:'0004',token:value.token,maxPages:100});
+      const result=await report({code:'0004',token:value.token,maxPages:100,onTrace});
       // Only a bounded sample is exposed to the administrator for field mapping.
       await db.update('fs_units',{id:eq(id)},{avec_state:'ready',avec_checked_at:new Date().toISOString(),
         avec_sample:result.result.slice(0,5),avec_error:null});
       const unit=await one('fs_units',{id:eq(id)});
-      if(unit.avec_mapping?.name) await importContacts(unit,result.result);
-      await event(id,'avec','ok',`${result.records} registros consultados. ${unit.avec_mapping?.name?'Clientes importados.':'Configure os campos para importar os clientes.'}`);
+      const imported=unit.avec_mapping?.name?await importContacts(unit,result.result):null;
+      await onTrace({stage:'completed',state:'ok',records:result.records,pages:result.pages,imported});
+      await event(id,'avec','ok',`${result.records} registros consultados. ${imported===null?'Configure os campos para importar os clientes.':imported+' clientes importados ou atualizados com nome e telefone válidos.'}`);
     } catch(error) {
       const detail=error instanceof AvecError||error instanceof AppError?error.message:
         'Não foi possível concluir a consulta ou importação AVEC. Confira os campos de importação.';
+      await onTrace({stage:'failed',state:'error',message:detail});
       await db.update('fs_units',{id:eq(id)},{avec_state:'error',avec_error:detail});
       await event(id,'avec','error',detail);
     } finally {busy.delete(key)}
@@ -116,7 +138,10 @@ export function application({ db, secrets, catalog = readCatalog, send = sendMes
       const previous=known.get(normalized);
       const record={id:previous?.id||randomUUID(),unit_id:unit.id,name,phone:normalized,email:text(row[mapping.email],160)||null,
         consent:previous?.consent||false,birthday:previous?.birthday||null,external_id:previous?.external_id||null};
-      if(mapping.birthday && /^\d{4}-\d{2}-\d{2}$/.test(String(row[mapping.birthday]))) record.birthday=row[mapping.birthday];
+      if(mapping.birthday){
+        const birthday=avecBirthday(row[mapping.birthday]);
+        if(birthday)record.birthday=birthday;
+      }
       records.set(normalized,record);
     }
     const values=[...records.values()];
@@ -222,6 +247,7 @@ export function application({ db, secrets, catalog = readCatalog, send = sendMes
   }
   let nextCatalog=0;
   let nextSchedule=0;
+  let nextLogCleanup=0;
   async function tick() {
     if(ticking) return;
     ticking=true;
@@ -238,6 +264,10 @@ export function application({ db, secrets, catalog = readCatalog, send = sendMes
       }
       for(let i=0;i<10;i++) if(!await processJob()) break;
       await db.remove('fs_sessions',{expires_at:'lt.'+new Date().toISOString()});
+      if(Date.now()>nextLogCleanup){
+        await db.remove('fs_events',{event:'eq.diagnostic',created_at:'lt.'+new Date(Date.now()-7*86400000).toISOString()});
+        nextLogCleanup=Date.now()+3600000;
+      }
     } finally {ticking=false}
   }
 

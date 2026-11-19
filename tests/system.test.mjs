@@ -5,9 +5,119 @@ import { fixture } from './support.mjs';
 import { candidates } from '../server/routines.mjs';
 import { passwordHash, passwordMatches, secretBox } from '../server/security.mjs';
 import { createAppServer } from '../server/main.mjs';
-import { fetchReportPage, AvecError } from '../server/providers/avec.mjs';
+import { fetchReportPage, fetchReportAll, AvecError, avecBirthday } from '../server/providers/avec.mjs';
 import { readCatalog, ProviderError, sendMessage } from '../server/providers/clickmassa.mjs';
 import { apiBase, externalEndpoint, publicAddress } from '../server/providers/http.mjs';
+import { responseShape, diagnosticUrl } from '../server/diagnostics.mjs';
+import { application } from '../server/application.mjs';
+
+test('saving AVEC credentials queries the real API object format using a raw token and records HTTP 401',async()=>{
+  const f=await fixture();
+  try{
+    const token='synthetic-raw-token';
+    const requests=[];
+    const app=application({db:f.db,secrets:secretBox('avec-integration-test-key'),version:'avec-contract-test',
+      report:options=>fetchReportAll({...options,fetchImpl:async(url,request)=>{
+        requests.push({url,authorization:request.headers.Authorization});
+        if(request.headers.Authorization!==token)return Response.json({message:'Unauthorized'},{status:401});
+        assert.equal(request.method,'GET');
+        assert.equal(url,'https://api.avec.beauty/reports/0004?page=1&limit=250');
+        return Response.json({code:200,data:{report:{description:'Synthetic report',requiredParams:'',total:null,
+          result:[{nome:'Synthetic customer',celular:'11999990000'}],hasMore:false}}});
+      }})});
+    const master={id:randomUUID(),master:true};
+    const unit=await app.route(master,'POST','/units',{name:'AVEC contract test',slug:'avec-contract-test'});
+    const path='/units/'+unit.id;
+    async function waitFor(expected){
+      for(let i=0;i<100;i++){
+        const info=await app.route(master,'GET',path+'/integration',{});
+        if(info.unit.avec_state===expected)return info;
+        await new Promise(resolve=>setTimeout(resolve,10));
+      }
+      assert.fail('AVEC query did not finish');
+    }
+    await app.route(master,'POST',path+'/avec',{token});
+    const success=await waitFor('ready');
+    assert(success.unit.sample_columns.includes('nome'));
+    assert(success.unit.sample_columns.includes('celular'));
+    assert.equal(success.unit.avec_error,null);
+    assert(success.diagnostics.some(entry=>entry.shape?.report?.path==='$.data.report'));
+    assert(!JSON.stringify(success.diagnostics).includes(token));
+    assert(!JSON.stringify(success.diagnostics).includes('Synthetic customer'));
+    await app.route(master,'POST',path+'/avec',{token:'invalid-test-token'});
+    const failure=await waitFor('error');
+    assert.match(failure.unit.avec_error,/HTTP 401/);
+    assert(failure.diagnostics.some(entry=>entry.http_status===401));
+    assert.deepEqual(requests.map(entry=>entry.authorization),[token,'invalid-test-token']);
+  }finally{await f.pg.close()}
+});
+
+test('visible diagnostics identify AVEC structure and HTTP errors without recording secrets or customer values',async()=>{
+  const traces=[];
+  const privateValue='never-record-this-private-value';
+  await fetchReportPage({code:'0004',token:privateValue,onTrace:async entry=>traces.push(entry),
+    fetchImpl:async()=>Response.json([{code:200,data:{report:{description:privateValue,
+      result:[{nome:privateValue,email:privateValue}],hasMore:false}},token:privateValue,message:privateValue}])});
+  assert.equal(traces.find(x=>x.stage==='http').http_status,200);
+  const structure=traces.find(x=>x.stage==='response_structure').shape;
+  assert.equal(structure.report.path,'[0].data.report');
+  assert.deepEqual(structure.records,{type:'array',length:1});
+  assert.equal(traces.find(x=>x.stage==='parsed').has_more,false);
+  assert(!JSON.stringify(traces).includes(privateValue));
+  assert(!JSON.stringify(responseShape({[privateValue]:privateValue,message:privateValue})).includes(privateValue));
+  const url=diagnosticUrl('https://user:private@example.test/reports/0004?page=2&token='+privateValue+'&search='+privateValue);
+  assert(!url.includes(privateValue));
+  assert(!url.includes('user:private'));
+  assert.equal(new URL(url).searchParams.get('page'),'2');
+  traces.length=0;
+  await assert.rejects(fetchReportPage({code:'0004',token:privateValue,onTrace:async entry=>traces.push(entry),
+    fetchImpl:async()=>Response.json([{code:200,data:{report:{message:privateValue}}}])}),/Result/);
+  assert.equal(traces.find(x=>x.stage==='http').http_status,200);
+  assert.equal(traces.find(x=>x.stage==='response_structure').shape.records.type,'undefined');
+  assert.equal(traces.at(-1).stage,'failed');
+  assert(!JSON.stringify(traces).includes(privateValue));
+  traces.length=0;
+  await assert.rejects(fetchReportPage({code:'0004',token:privateValue,onTrace:async entry=>traces.push(entry),
+    fetchImpl:async()=>new Response(privateValue,{status:403})}),/HTTP 403/);
+  assert.equal(traces.find(x=>x.stage==='http').http_status,403);
+  assert.equal(traces.at(-1).stage,'failed');
+  assert(!JSON.stringify(traces).includes(privateValue));
+});
+
+test('reads the observed AVEC report envelope and paginates until report.hasMore is false',async()=>{
+  assert.equal(avecBirthday('15/1/1990'),'1990-01-15');
+  assert.equal(avecBirthday('29/02/2000'),'2000-02-29');
+  assert.equal(avecBirthday('31/02/2000'),null);
+  assert.equal(avecBirthday('15/1'),null);
+  assert.equal(avecBirthday(''),null);
+  const pages=[];
+  const result=await fetchReportAll({code:'0004',token:'fake-avec-token',fetchImpl:async(url,options)=>{
+    const page=Number(new URL(url).searchParams.get('page'));
+    pages.push(page);
+    assert.equal(options.headers.Authorization,'fake-avec-token');
+    return Response.json([{code:200,data:{report:{
+      description:'Relatório de teste',requiredParams:'',total:null,
+      result:page===1?[{nome:'Cliente de teste',celular:'11999990000'}]:[],
+      hasMore:page===1,
+    }}}]);
+  }});
+  assert.deepEqual(pages,[1,2]);
+  assert.equal(result.records,1);
+  assert.equal(result.pages,2);
+  assert.equal(result.result[0].nome,'Cliente de teste');
+  for(const shape of [
+    {code:200,data:{report:{result:[],hasMore:false}}},
+    {Result:[],HasMore:false},
+    {Data:{Result:[],HasMore:false}},
+  ]){
+    const page=await fetchReportPage({code:'0004',token:'fake',fetchImpl:async()=>Response.json(shape)});
+    assert.deepEqual(page.result,[]);
+    assert.equal(page.hasMore,false);
+  }
+  await assert.rejects(fetchReportPage({code:'0004',token:'fake',
+    fetchImpl:async()=>Response.json([{code:401,data:{report:{result:[],hasMore:false}}}])}),
+    error=>error instanceof AvecError&&error.status===401);
+});
 
 test('custom Clickmassa base is used for login, channels, templates and channel send URL',async()=>{
   const base='https://api.example.test/platform';
@@ -90,6 +200,9 @@ test('master setup, catalog sync, test send, idempotency, queue acknowledgement 
     assert.equal(info.channels.length,2);
     assert.equal(info.templates.length,1);
     assert.equal(info.base_url,'https://api.custom.test');
+    assert.equal(info.reader,'avec-report-envelope-v2');
+    assert.equal(info.diagnostics.at(0).provider,'Clickmassa');
+    assert.equal(info.diagnostics.at(0).channels,2);
     assert(!JSON.stringify(info).includes('"password"'));
     const channel=info.channels.find(c=>c.type==='waba'),template=info.templates[0];
     const claims=Buffer.from(JSON.stringify({tenantId:10,sessionId:1,channelType:'waba',exp:Date.now()/1000+3600})).toString('base64url');
@@ -115,6 +228,8 @@ test('master setup, catalog sync, test send, idempotency, queue acknowledgement 
     await f.db.update('fs_users',{id:'eq.'+viewer.id},{must_change_password:false});
     viewer.must_change_password=false;
     await assert.rejects(f.app.route(viewer,'GET','/units/'+unit.id+'/integration',{}),{status:403});
+    const viewerData=await f.app.route(viewer,'GET','/units/'+unit.id+'/data',{});
+    assert(viewerData.events.every(entry=>entry.event!=='diagnostic'));
     await assert.rejects(f.app.route(viewer,'POST','/units/'+unit.id+'/send',request),{status:403});
     const another=await f.app.route(master,'POST','/units',{name:'Other unit',slug:'other'});
     await assert.rejects(f.app.route(viewer,'GET','/units/'+another.id+'/data',{}),{status:403});

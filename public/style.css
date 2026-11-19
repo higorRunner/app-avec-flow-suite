@@ -907,3 +907,20 @@ dialog::backdrop {
 .sidebar .btn:hover {
   background: #284450;
 }
+
+.diagnostics {
+  margin-top:24px;
+  min-width:0;
+}
+
+.diagnostic-log {
+  width:100%;
+  height:320px;
+  resize:vertical;
+  font-family:Consolas,monospace;
+  font-size:.8rem;
+  line-height:1.6;
+  overflow-wrap:anywhere;
+  background:#102b36;
+  color:#e1eeee;
+}

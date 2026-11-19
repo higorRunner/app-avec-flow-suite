@@ -119,7 +119,7 @@ export async function start(env=process.env) {
   const url=env.SUPABASE_URL,key=env.SUPABASE_SERVICE_ROLE_KEY;
   if(!url||!key)throw new Error('Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY no serviço do FlowSuite.');
   const db=database({url,key});
-  const app=application({db,secrets:secretBox(env.APP_SECRET||key)});
+  const app=application({db,secrets:secretBox(env.APP_SECRET||key),version:env.GIT_SHA||'rebuild-1'});
   const {server,health}=createAppServer({db,app,secure:env.COOKIE_SECURE!=='false',version:env.GIT_SHA||'rebuild-1'});
   const state=await health();
   if(!state.ok) throw new Error(state.message);

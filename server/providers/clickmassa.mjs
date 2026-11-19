@@ -1,4 +1,5 @@
 import { apiBase, apiEndpoint, externalEndpoint, publicFetch, DEFAULT_API_BASE } from './http.mjs';
+import { responseShape, diagnosticUrl } from '../diagnostics.mjs';
 const channelId = /^[1-9]\d*$/;
 
 export class ProviderError extends Error {
@@ -17,7 +18,7 @@ export class ProviderError extends Error {
 
 export const senderEndpoint = externalEndpoint;
 
-async function call(url, { operation, token, body, fetchImpl = publicFetch }) {
+async function call(url, { operation, token, body, fetchImpl = publicFetch, onTrace }) {
   const headers = {
     Accept: 'application/json',
     Origin: 'https://cs.clickmassa.com.br',
@@ -26,19 +27,27 @@ async function call(url, { operation, token, body, fetchImpl = publicFetch }) {
   if (token) headers.Authorization = `Bearer ${token}`;
   if (body) headers['Content-Type'] = 'application/json';
   let response;
+  const started=Date.now();
+  const method=body?'POST':'GET';
+  const trace=info=>onTrace?.({stage:operation,url:diagnosticUrl(url),method,...info,duration_ms:Date.now()-started});
+  await trace({state:'info'});
   try {
     response = await fetchImpl(url, {
       method: body ? 'POST' : 'GET', body: body && JSON.stringify(body), headers,
       signal: AbortSignal.timeout(20000), redirect: 'error',
     });
   } catch {
+    await trace({state:'error',message:'Falha de conexão ou tempo limite.'});
     throw new ProviderError(operation, null, true, 'Falha de conexão ou tempo limite ao acessar a API.');
   }
+  await trace({state:response.ok?'info':'error',http_status:response.status});
   if (!response.ok) {
     throw new ProviderError(operation, response.status, response.status >= 500 || [408, 409, 429].includes(response.status));
   }
   try {
-    return await response.json();
+    const json=await response.json();
+    await trace({state:'ok',http_status:response.status,shape:responseShape(json)});
+    return json;
   } catch {
     throw new ProviderError(operation, response.status, true, 'A API retornou conteúdo em formato diferente de JSON.');
   }
@@ -71,10 +80,10 @@ function normalizeTemplate(item, channel) {
   };
 }
 
-export async function readCatalog({ email, password, tenantId, baseUrl = DEFAULT_API_BASE, fetchImpl = publicFetch }) {
+export async function readCatalog({ email, password, tenantId, baseUrl = DEFAULT_API_BASE, fetchImpl = publicFetch, onTrace }) {
   const base = apiBase(baseUrl);
   const login = await call(apiEndpoint(base,'auth/login/'), {
-    operation: 'autenticação do catálogo', body: { email, password, captchaToken: '' }, fetchImpl,
+    operation: 'autenticação do catálogo', body: { email, password, captchaToken: '' }, fetchImpl,onTrace,
   });
   if (tenantId && String(login?.tenantId) !== String(tenantId)) {
     throw new ProviderError('validar empresa', null, false, 'O login retornou uma empresa diferente da vinculada à unidade.');
@@ -84,7 +93,7 @@ export async function readCatalog({ email, password, tenantId, baseUrl = DEFAULT
   }
   tenantId = String(login.tenantId);
   const token = login.token;
-  const response = await call(apiEndpoint(base,'whatsapp/?hideInactive=true'), { operation: 'listar canais', token, fetchImpl });
+  const response = await call(apiEndpoint(base,'whatsapp/?hideInactive=true'), { operation: 'listar canais', token, fetchImpl,onTrace });
   if (!Array.isArray(response)) throw new ProviderError('interpretar canais',null,false,'A lista de canais tem formato diferente da captura.');
   const channels = [];
   const templates = new Map();
@@ -99,7 +108,7 @@ export async function readCatalog({ email, password, tenantId, baseUrl = DEFAULT
     for (let page = 1; ; page++) {
       if (page > 100) throw new ProviderError('listar modelos',null,false,'O catálogo ultrapassou o limite de 100 páginas.');
       const query = new URLSearchParams({ pageNumber: String(page), search: '', status: 'APPROVED', whatsappId: id });
-      const result = await call(apiEndpoint(base,'templates?'+query), { operation: 'listar modelos', token, fetchImpl });
+      const result = await call(apiEndpoint(base,'templates?'+query), { operation: 'listar modelos', token, fetchImpl,onTrace });
       if (!Array.isArray(result?.templates) || typeof result.hasMore !== 'boolean' || (result.hasMore && !result.templates.length)) {
         throw new ProviderError('interpretar modelos',null,false,'A paginação de modelos tem formato diferente da captura.');
       }

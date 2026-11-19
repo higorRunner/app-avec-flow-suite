@@ -34,7 +34,7 @@ export async function fixture() {
       }
       const [op,...rest]=raw.split('.');
       const value=rest.join('.');
-      const comparison={eq:'=',gt:'>',lt:'<'}[op];
+      const comparison={eq:'=',neq:'<>',gt:'>',lt:'<'}[op];
       if(!comparison)throw Error('Unknown filter '+raw);
       values.push(value);clauses.push(identifier(key)+comparison+'$'+values.length);
     }

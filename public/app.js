@@ -152,6 +152,34 @@ function integrationStatus(){
    ${button('Atualizar estado','refresh-integration','','small')}
   </section>`;
 }
+function diagnosticText(info){
+  const lines=[`FlowSuite · versão: ${info.version||'não informada'}`,`Leitor AVEC: ${info.reader||'não informado'}`];
+  const stages={request:'Iniciando consulta',http:'Resposta HTTP',response_structure:'Estrutura da resposta',
+    parsed:'Registros reconhecidos',completed:'Consulta concluída',failed:'Falha'};
+  for(const entry of [...(info.diagnostics||[])].reverse()){
+    lines.push('',`[${fmt(entry.created_at)}] ${entry.provider} · ${stages[entry.stage]||entry.stage} · ${entry.state}`);
+    if(entry.version)lines.push(`Versão desta consulta: ${entry.version}`);
+    if(entry.url)lines.push(`${entry.method} ${entry.url}`);
+    if(entry.http_status!==undefined)lines.push(`HTTP ${entry.http_status}${entry.content_type?' · '+entry.content_type:''}`);
+    if(entry.duration_ms!==undefined)lines.push(`Tempo: ${entry.duration_ms} ms`);
+    if(entry.shape)lines.push('Estrutura: '+JSON.stringify(entry.shape));
+    if(entry.records!==undefined)lines.push(`Registros: ${entry.records}${entry.pages!==undefined?' · Páginas: '+entry.pages:''}`);
+    if(entry.has_more!==undefined)lines.push('Mais páginas: '+(entry.has_more?'sim':'não'));
+    if(entry.imported!==undefined&&entry.imported!==null)lines.push('Clientes importados: '+entry.imported);
+    if(entry.channels!==undefined)lines.push(`Canais: ${entry.channels} · Modelos: ${entry.templates}`);
+    if(entry.message)lines.push(entry.message);
+  }
+  if(!info.diagnostics?.length)lines.push('','Nenhuma consulta registrada nesta versão. Salve a conexão ou sincronize para gerar o diagnóstico.');
+  return lines.join('\n');
+}
+function updateDiagnostics(){
+  const log=document.getElementById('integration-log');
+  if(log&&document.activeElement!==log){
+    const atEnd=log.scrollTop+log.clientHeight>=log.scrollHeight-20;
+    log.value=diagnosticText(state.integration);
+    if(atEnd)log.scrollTop=log.scrollHeight;
+  }
+}
 function integrationPage(){
   const info=state.integration,u=info.unit;
   const rows=info.channels.map(c=>[
@@ -179,18 +207,25 @@ function integrationPage(){
    </section>
    <section class="card stack"><h2>Conexão AVEC</h2><form id="avec-form" class="stack">
     ${input('Token AVEC','avec_token','password','','autocomplete="new-password" '+(!info.avec?'required':''))}
+    <p class="hint">Cole somente o valor do token, sem o prefixo Bearer. A consulta usa o relatório de clientes 0004.</p>
     ${info.avec?'<p class="hint">Token cadastrado. Preencha para substituir.</p>':''}
     <div class="actions"><button class="btn primary" type="submit">Salvar e consultar clientes</button></div>
    </form>
    ${columns.length?`<details><summary>Escolher os campos para importar clientes</summary><form id="mapping-form" class="stack">
      <p class="hint">Selecione as colunas retornadas pela AVEC. O consentimento será definido individualmente no cadastro de clientes.</p>
-     ${['name','phone','email','birthday'].map((key,i)=>select(['Nome do cliente','Telefone','E-mail (opcional)','Nascimento (AAAA-MM-DD, opcional)'][i],
+     ${['name','phone','email','birthday'].map((key,i)=>select(['Nome do cliente','Telefone','E-mail (opcional)','Nascimento (opcional)'][i],
        'map-'+key,[['','Selecione'],...columns.map(k=>[k,k])],u.avec_mapping?.[key],i<2?'required':'')).join('')}
      <button class="btn primary" type="submit">Importar com estes campos</button></form></details>`:''}
    </section>
   </div><aside class="stack"><div id="integration-status">${integrationStatus()}</div><section class="card stack"><h2>Modelos importados</h2>
    <p class="metric-number">${info.templates.filter(t=>t.active&&t.supported).length}</p><p class="hint">Modelos textuais aprovados disponíveis para a equipe.</p>
-   <p class="hint">Modelos com mídia e campos adicionais aparecem no catálogo com a indicação de formato pendente.</p></section></aside></div>`;
+   <p class="hint">Modelos com mídia e campos adicionais aparecem no catálogo com a indicação de formato pendente.</p></section></aside></div>
+   <section class="card stack diagnostics"><div class="actions between"><h2>Diagnóstico das integrações</h2>
+    <div class="actions">${button('Atualizar logs','refresh-diagnostics','','small')}${button('Copiar diagnóstico','copy-diagnostics','','small')}</div></div>
+    <p class="hint" id="diagnostic-help">Atualiza a cada 5 segundos. Mostra as últimas 100 etapas dos últimos 7 dias. Tokens, senhas e dados dos clientes ficam ocultos.</p>
+    <label for="integration-log">Log de consultas</label>
+    <textarea id="integration-log" class="diagnostic-log" readonly spellcheck="false" aria-describedby="diagnostic-help">${h(diagnosticText(info))}</textarea>
+   </section>`;
 }
 function dashboard(){
   const d=state.data;
@@ -448,6 +483,13 @@ async function action(name,btn){
       state.integrationPendingRender=false;
       renderMain();
       toast('Estado atualizado.');return;
+    case 'refresh-diagnostics':
+      state.integration=await api('/units/'+state.integration.unit.id+'/integration');
+      updateDiagnostics();
+      document.getElementById('integration-status').innerHTML=integrationStatus();
+      toast('Diagnóstico atualizado.');return;
+    case 'copy-diagnostics':
+      await navigator.clipboard.writeText(diagnosticText(state.integration));toast('Diagnóstico copiado.');return;
     case 'sync-now':
       await api('/units/'+state.integration.unit.id+'/catalog','POST',{});toast('Sincronização iniciada.');return;
     case 'sender': {
@@ -668,11 +710,12 @@ setInterval(async()=>{
     if(state.page==='integration'&&state.integration){
       const info=await api('/units/'+state.integration.unit.id+'/integration');
       const changed=info.unit.sync_state!==state.integration.unit.sync_state||info.unit.avec_state!==state.integration.unit.avec_state;
-      const editing=document.activeElement?.closest('form');
+      const editing=document.activeElement?.closest('form')||document.activeElement?.id==='integration-log';
       if(changed)state.integrationPendingRender=true;
       state.integration=info;
       if(state.integrationPendingRender&&!editing){state.integrationPendingRender=false;renderMain()}
       else if(document.getElementById('integration-status'))document.getElementById('integration-status').innerHTML=integrationStatus();
+      updateDiagnostics();
     }else if(state.unit&&['dashboard','reports'].includes(state.page)){
       await refreshData();renderMain();
     }
