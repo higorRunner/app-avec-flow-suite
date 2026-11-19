@@ -42,7 +42,7 @@ export function reportDispatch({db,deliveryConfig}){
       const contact=byId||byPhone;
       const destination=contact?.phone||parsed;
       if(!destination)reason='Telefone ausente ou inválido.';
-      if(contact&&!contact.consent)reason='Cliente sem autorização de contato. Revise o cadastro antes de enviar.';
+      if(contact&&(!contact.consent||contact.send_blocked))reason='Cliente bloqueado para envio. Revise o cadastro antes de enviar.';
       const name=contact?.name||scalar(row.nome??row.cliente_nome??row.cliente??row.name)||'Destinatário do relatório';
       return {index,row,contact,phone:destination,name,new_contact:!contact&&!reason,reason};
     });
@@ -78,16 +78,13 @@ export function reportDispatch({db,deliveryConfig}){
     assert(input.confirm===true,'Confirme a revisão dos destinatários e a autorização do envio.');
     const result=await prepare(unit,user,input);
     assert(result.rows.every(row=>!row.reason),'Existem itens bloqueados na seleção. Corrija ou remova esses itens.');
-    assert(!result.rows.some(row=>row.new_contact)||input.confirm_new_contacts===true,
-      'Confirme a autorização para cadastrar os novos destinatários ou remova esses itens.');
     const jobs=[];
     for(const row of result.rows){
       let contact=row.contact;
       if(!contact){
-        // Only an explicit acknowledgement creates new consent. Existing
-        // withheld consent is never overridden by a report send.
+        // New valid numbers are available. An existing block always wins.
         const [existing]=await db.select('fs_contacts',{unit_id:eq(unit),phone:eq(row.phone),limit:1});
-        assert(!existing||existing.consent,'O destinatário possui um cadastro sem autorização.');
+        assert(!existing||existing.consent&&!existing.send_blocked,'O destinatário está bloqueado para envio.');
         contact=existing||(await db.insert('fs_contacts',{unit_id:unit,name:text(row.name,120),phone:row.phone,consent:true,source:'report'}))[0];
       }
       const fields=Object.fromEntries(result.template.variables.map((key,index)=>['report.'+key,row.params[index]]));

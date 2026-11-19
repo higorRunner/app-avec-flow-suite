@@ -74,7 +74,7 @@ export async function syncAvecData({db,unit,token,report,onTrace,now=new Date()}
       name,phone:number,avec_global_id:row.cliente_id?String(row.cliente_id):previous?.avec_global_id||null,
       email:text(row.email,160)||previous?.email||null,birthday:avecBirthday(row.aniversario)||previous?.birthday||null,
       birthday_month_day:avecBirthdayMonthDay(row.aniversario)||previous?.birthday_month_day||null,
-      consent:previous?.consent||false,source:'avec'};
+      send_blocked:previous?.send_blocked===true,consent:!!number&&previous?.send_blocked!==true,source:'avec'};
     if(batch&&(!previous||previous.phone===number))contactBatch.push(value);
     else if(previous)await db.update('fs_contacts',{id:eq(previous.id),unit_id:eq(unit.id)},value);
     else await db.insert('fs_contacts',value);

@@ -224,7 +224,7 @@ function integrationPage(){
      <a class="btn" href="${h(unitLink(u))}#settings">Configurar sincronização completa ↗</a></div>
    </form>
    ${columns.length?`<details><summary>Escolher os campos para importar clientes</summary><form id="mapping-form" class="stack">
-     <p class="hint">Selecione as colunas retornadas pela AVEC. O consentimento será definido individualmente no cadastro de clientes.</p>
+     <p class="hint">Clientes com telefone válido ficam disponíveis. Bloqueios manuais são preservados.</p>
      ${['name','phone','email','birthday'].map((key,i)=>select(['Nome do cliente','Telefone','E-mail (opcional)','Nascimento (opcional)'][i],
        'map-'+key,[['','Selecione'],...columns.map(k=>[k,k])],u.avec_mapping?.[key],i<2?'required':'')).join('')}
      <button class="btn primary" type="submit">Importar com estes campos</button></form></details>`:''}
@@ -323,7 +323,7 @@ function contactsPage(){
 function contactTable(){
   const rows=state.contacts.slice(0,25);
   return `${rows.length?table(['Cliente','Telefone','Autorização','Ação'],rows.map(c=>[
-    h(c.name),h(c.phone||'Telefone não informado'),badge(c.consent?'Autorizado':'Sem autorização',c.consent?'ok':'warn'),
+    h(c.name),h(c.phone||'Telefone não informado'),badge(c.send_blocked?'Bloqueado':c.consent?'Disponível':'Sem telefone válido',c.send_blocked?'error':c.consent?'ok':'warn'),
     `<div class="actions">${button('Histórico','contact-history','data-id="'+c.id+'"','small')}${canSend()?button('Editar','edit-contact','data-id="'+c.id+'"','small'):''}</div>`,
   ])):empty('Nenhum cliente encontrado','Cadastre um cliente ou peça ao administrador a importação AVEC.')}
    <div class="pager">${button('Anterior','contacts-prev',state.contactPage?'':'disabled','small')}<small>Página ${state.contactPage+1}</small>${button('Próxima','contacts-next',state.contacts.length>25?'':'disabled','small')}</div>`;
@@ -391,7 +391,7 @@ function settingsPage(){
      ${input('Dias futuros da agenda','future_days','number',c.future_days??30,'required min="1" max="180"')}
      ${input('ID da unidade AVEC (token de franquia)','salon_id','text',c.salon_id||'','maxlength="40" placeholder="Opcional para token de unidade"')}</div>
     <label class="check"><input type="checkbox" name="auto_import" ${c.auto_import!==false?'checked':''}>Importar clientes, serviços e agendamentos para as rotinas</label>
-    <p class="hint">As autorizações de contato existentes são mantidas. Clientes novos ficam sem autorização até a revisão no cadastro. A integração usa as informações que os relatórios disponibilizam, respeitando o período escolhido.</p>
+    <p class="hint">Clientes com telefone válido ficam disponíveis por padrão. Bloqueios manuais são preservados. A integração respeita o período escolhido.</p>
     <button class="btn primary" type="submit">Salvar sincronização</button></form>
    <section class="card stack"><h2>Avisos aos profissionais</h2>
     <p class="hint">Cadastre o WhatsApp de cada profissional abaixo. Os avisos usam o canal e os modelos aprovados selecionados aqui.</p>
@@ -497,9 +497,10 @@ function renderMain(){
 function contactDialog(contact={}){
   openDialog(contact.id?'Editar cliente':'Novo cliente',`<form id="contact-form" class="stack" data-id="${h(contact.id||'')}">
    ${input('Nome','name','text',contact.name,'required maxlength="120"')}
-   ${input('Telefone com DDI','phone','tel',contact.phone,'required placeholder="+55 11 99999-0000" maxlength="30"')}
+   ${input('Telefone com DDI','phone','tel',contact.phone,'placeholder="+55 11 99999-0000" maxlength="30"')}
    <div class="form-grid">${input('E-mail (opcional)','email','email',contact.email,'maxlength="160"')}${input('Nascimento (opcional)','birthday','date',contact.birthday)}</div>
-   <label class="check"><input type="checkbox" name="consent" ${contact.consent?'checked':''}>O cliente autorizou receber mensagens de relacionamento.</label>
+   <label class="check"><input type="checkbox" name="blocked" ${contact.send_blocked?'checked':''}>Bloquear envios para este cliente.</label>
+   <p class="hint">Sem bloqueio, um telefone válido deixa o cliente disponível. O bloqueio é mantido nas sincronizações AVEC.</p>
    ${footer()}</form>`);
 }
 async function membersDialog(){
@@ -753,7 +754,7 @@ async function submit(form){
       await api('/units/'+state.adminUnit.id+'/members/'+form.dataset.id+'/password','POST',data);
       dialog.close();await membersDialog();toast('Senha temporária definida.');return;
     case 'contact-form':
-      await api(unitPath('contacts'),'POST',{...data,id:form.dataset.id||null,consent:f.has('consent')});
+      await api(unitPath('contacts'),'POST',{...data,id:form.dataset.id||null,blocked:f.has('blocked')});
       dialog.close();await refreshData();state.contactPage=0;await loadContacts();toast('Cliente salvo.');return;
     case 'service-form':
       await api(unitPath('services'),'POST',data);dialog.close();await refreshData();render();return;
@@ -767,7 +768,7 @@ async function submit(form){
       dialog.close();state.settings=await api(unitPath('settings'));await refreshData();render();toast('Profissional atualizado.');return;
     case 'avec-settings-form':
       await api(unitPath('settings'),'POST',{avec:{enabled:f.has('enabled'),auto_import:f.has('auto_import'),interval_minutes:Number(data.interval_minutes),
-        history_days:Number(data.history_days),future_days:Number(data.future_days),salon_id:data.salon_id,consent_new:false}});
+        history_days:Number(data.history_days),future_days:Number(data.future_days),salon_id:data.salon_id}});
       state.settings=await api(unitPath('settings'));await refreshData();renderMain();toast('Sincronização configurada.');return;
     case 'alerts-settings-form': {
       const mappings={arrival:{},stock:{}};

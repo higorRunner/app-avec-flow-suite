@@ -35,7 +35,7 @@ export function reportComposer({api,h,select,button,table,openDialog,unitPath,ch
       <p class="hint">${selected.size} itens selecionados. Primeiro identifique os clientes, depois escolha o conteúdo de cada campo.</p>
       <div class="form-grid">${select('Coluna de telefone ou celular','report-phone',[['','Usar o cadastro pelo ID'],...report.columns.map(key=>[key,valueLabel(key)])],phoneColumn)}
       ${select('Coluna do ID do cliente AVEC','report-id',[['','Identificar pelo telefone'],...report.columns.map(key=>[key,valueLabel(key)])],idColumn)}</div>
-      <p class="hint">O ID é procurado nos clientes sincronizados desta unidade. O sistema confere se ID e telefone correspondem. Clientes sem autorização ficam bloqueados.</p>
+      <p class="hint">O ID é procurado nos clientes sincronizados desta unidade. O sistema confere se ID e telefone correspondem. Bloqueios manuais são respeitados.</p>
       ${select('Canal Oficial','report-channel',[['','Selecione'],...available.map(c=>[c.id,c.name])],saved?.channel_id,'required')}
       ${select('Modelo da mensagem','report-template',[['','Selecione o canal primeiro'],...models().filter(t=>t.channel_id===saved?.channel_id).map(t=>[t.id,t.name])],saved?.template_id,'required')}
       <div id="report-template-fields" class="stack">${fields(saved?.template_id,saved?.mapping)}</div>
@@ -49,7 +49,6 @@ export function reportComposer({api,h,select,button,table,openDialog,unitPath,ch
       <div class="message-review-list">${review.rows.map(row=>`<article class="review-item"><div class="actions between"><strong>${h(row.name)}</strong>${button('Remover item','report-remove','data-index="'+row.index+'"','small')}</div>
         <p class="hint">${h(row.phone||'Sem telefone')} · Item ${row.index+1}${row.new_contact?' · Novo destinatário':''}</p>
         ${row.reason?`<p class="alert error">${h(row.reason)}</p>`:`<p class="preview">${h(review.body.replace(/\{\{\s*(\d+)\s*\}\}/g,(_,key)=>row.params[Number(key)-1]||''))}</p>`}</article>`).join('')}</div>
-      ${review.rows.some(row=>row.new_contact)?'<label class="check"><input type="checkbox" name="confirm_new_contacts" required>Autorizo cadastrar os novos destinatários selecionados e confirmo que eles autorizaram receber estas mensagens.</label>':''}
       <label class="check"><input type="checkbox" name="confirm" required>Revisei os números, os dados e as mensagens e confirmo a autorização dos destinatários.</label>
       <div class="actions">${button('Voltar à montagem','report-compose','','ghost')}<button class="btn primary" type="submit" ${review.blocked||!review.ready?'disabled':''}>Confirmar envio de ${review.ready} mensagem(ns)</button></div></form>`);
   }

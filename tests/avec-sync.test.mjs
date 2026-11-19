@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { fixture } from './support.mjs';
 import { syncAvecData, avecDate, avecConfig } from '../server/avec-sync.mjs';
 import { fetchReportAll } from '../server/providers/avec.mjs';
@@ -78,8 +79,11 @@ test('AVEC sync is idempotent, preserves local settings, records real completion
       assert.equal(withoutPhone.phone,null);
       assert.equal(withoutPhone.consent,false);
     }
-    assert(contacts.every(c=>c.consent===false));
+    assert(contacts.filter(c=>c.phone).every(c=>c.consent===true));
     const customer=contacts.find(c=>c.external_id==='1');
+    const blockedCustomer=contacts.find(c=>c.external_id==='2');
+    await f.app.route({master:true},'POST','/units/'+unit.id+'/contacts',{
+      id:blockedCustomer.id,name:blockedCustomer.name,phone:blockedCustomer.phone,blocked:true});
     assert.equal(String(customer.birthday).slice(0,10),'1990-01-15');
     const service=(await f.db.select('fs_services',{unit_id:'eq.'+unit.id}))[0];
     assert.equal(service.return_days,30);
@@ -104,6 +108,9 @@ test('AVEC sync is idempotent, preserves local settings, records real completion
     await f.db.update('fs_services',{id:'eq.'+service.id},{return_days:42,return_source:'manual'});
     await f.db.update('fs_professionals',{id:'eq.'+professional.id},{phone:'+5511999990099',enabled:true});
     await sync();
+    const preservedBlock=(await f.db.select('fs_contacts',{id:'eq.'+blockedCustomer.id}))[0];
+    assert.equal(preservedBlock.send_blocked,true);
+    assert.equal(preservedBlock.consent,false);
     assert.equal((await f.db.select('fs_contacts',{unit_id:'eq.'+unit.id})).length,5);
     assert.equal((await f.db.select('fs_services',{unit_id:'eq.'+unit.id})).length,1);
     assert.equal((await f.db.select('fs_professionals',{unit_id:'eq.'+unit.id})).length,1);
@@ -130,10 +137,20 @@ test('AVEC sync is idempotent, preserves local settings, records real completion
     assert.equal(stock.payload.products[0].quantity,2);
     assert.equal(stock.payload.products[0].minimum,5);
     assert.equal(stock.payload.products[0].low_stock,true);
+    rows['0004'].find(row=>row.id===5).celular='11999990005';
     rows['0186']=rows['0186'].filter(row=>row.idItem!==501);
     await sync();
     const reopened=(await f.db.select('fs_appointments',{unit_id:'eq.'+unit.id,external_id:'eq.receipt:500:501'}))[0];
+    assert.equal((await f.db.select('fs_contacts',{external_id:'eq.5',unit_id:'eq.'+unit.id}))[0].consent,true);
     assert.equal(reopened.completed_at,null);
     assert.equal(reopened.canceled,true);
+    const migration=await readFile(new URL('../sql/ATUALIZAR_DISPONIBILIDADE_CLIENTES.sql',import.meta.url),'utf8');
+    await f.db.update('fs_contacts',{id:'eq.'+customer.id},{consent:false});
+    await f.pg.exec(migration);
+    assert.equal((await f.db.select('fs_contacts',{id:'eq.'+customer.id}))[0].consent,true);
+    assert.equal((await f.db.select('fs_contacts',{id:'eq.'+blockedCustomer.id}))[0].consent,false);
+    assert.equal((await f.db.select('fs_contacts',{external_id:'eq.6',unit_id:'eq.'+unit.id}))[0].consent,false);
+    await f.pg.exec(migration);
+    assert.equal((await f.db.select('fs_contacts',{id:'eq.'+blockedCustomer.id}))[0].send_blocked,true);
   }finally{await f.pg.close()}
 });

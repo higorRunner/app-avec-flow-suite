@@ -23,7 +23,7 @@ export function candidates({ unit, rule, contacts, appointments, services, jobs,
   const relevant = appointments.filter(a=>!a.canceled);
   const due = [];
   for (const contact of contacts) {
-    if (!contact.consent||!contact.phone) continue;
+    if (!contact.consent||contact.send_blocked||!contact.phone) continue;
     const history = relevant.filter(a=>a.contact_id===contact.id);
     let event;
     if (rule.type === 'birthday') {

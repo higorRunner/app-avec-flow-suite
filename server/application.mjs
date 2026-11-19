@@ -165,7 +165,7 @@ export function application({ db, secrets, catalog = readCatalog, send = sendMes
       if(!name) continue;
       const previous=known.get(normalized);
       const record={id:previous?.id||randomUUID(),unit_id:unit.id,name,phone:normalized,email:text(row[mapping.email],160)||null,
-        consent:previous?.consent||false,birthday:previous?.birthday||null,external_id:previous?.external_id||null};
+        send_blocked:previous?.send_blocked===true,consent:previous?.send_blocked!==true,birthday:previous?.birthday||null,external_id:previous?.external_id||null};
       if(mapping.birthday){
         const birthday=avecBirthday(row[mapping.birthday]);
         if(birthday)record.birthday=birthday;
@@ -257,7 +257,7 @@ export function application({ db, secrets, catalog = readCatalog, send = sendMes
         Object.assign(job.payload,await alerts.validate(job,unit));
       }else if(job.kind!=='test'){
         const contact=await one('fs_contacts',{id:eq(job.contact_id),unit_id:eq(job.unit_id)});
-        assert(contact?.consent&&contact.phone===job.phone,'O contato revogou a autorização ou mudou de telefone.');
+        assert(contact?.consent&&!contact.send_blocked&&contact.phone===job.phone,'O cliente foi bloqueado ou mudou de telefone.');
       }
       if(job.rule_id){
         const rule=await one('fs_rules',{id:eq(job.rule_id),unit_id:eq(job.unit_id)});
@@ -550,8 +550,13 @@ export function application({ db, secrets, catalog = readCatalog, send = sendMes
     }
     if(action==='contacts'&&method==='POST'){
       const name=text(input.name,120);assert(name.length>=2,'Preencha o nome do contato.');
-      const record={name,phone:phone(input.phone),email:text(input.email,160)||null,
-        birthday:input.birthday||null,consent:input.consent===true};
+      const previous=input.id?await one('fs_contacts',{unit_id:eq(id),id:eq(uuid(input.id))}):null;
+      if(input.id)assert(previous,'Cliente não encontrado.',404);
+      const blocked=typeof input.blocked==='boolean'?input.blocked:
+        typeof input.consent==='boolean'?!input.consent:previous?.send_blocked===true;
+      const number=input.phone?phone(input.phone):null;
+      const record={name,phone:number,email:text(input.email,160)||null,
+        birthday:input.birthday||null,send_blocked:blocked,consent:!!number&&!blocked};
       if(record.birthday) assert(/^\d{4}-\d{2}-\d{2}$/.test(record.birthday)&&!Number.isNaN(Date.parse(record.birthday)),'Data de nascimento inválida.');
       if(input.id) return db.update('fs_contacts',{unit_id:eq(id),id:eq(uuid(input.id))},record);
       return db.insert('fs_contacts',{unit_id:id,...record});

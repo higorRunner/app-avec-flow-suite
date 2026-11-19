@@ -89,7 +89,7 @@ with sync_playwright() as p:
     page.get_by_role("button", name="Novo cliente", exact=False).click()
     page.get_by_label("Nome", exact=True).fill("Cliente teste")
     page.get_by_label("Telefone com DDI").fill("+5511999990001")
-    page.get_by_role("checkbox", name="O cliente autorizou").check()
+    page.get_by_role("checkbox", name="Bloquear envios para este cliente.",exact=True).uncheck()
     page.get_by_role("button", name="Salvar", exact=True).click()
     expect(page.get_by_role("cell", name="Cliente teste", exact=True)).to_be_visible()
     page.get_by_role("button", name="Histórico", exact=True).click()

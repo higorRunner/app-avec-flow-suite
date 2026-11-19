@@ -53,10 +53,10 @@ test('report sends use server snapshots, scope actor and unit, resolve customer 
   }finally{await f.pg.close()}
 });
 
-test('report recipient review blocks missing consent and conflicting identity and requires explicit new-contact consent',async()=>{
+test('report recipient review preserves blocks and identity checks while new valid numbers are available',async()=>{
   const f=await setup();
   try{
-    await f.db.update('fs_contacts',{id:'eq.'+f.contact.id},{consent:false});
+    await f.db.update('fs_contacts',{id:'eq.'+f.contact.id},{consent:false,send_blocked:true});
     const issued=await f.dispatch.issue({unit:f.unit.id,user:f.user.id,code:'0004',rows:[
       {id:101,celular:'11999990001',nome:'Existing',valor:'A'},
       {id:'',celular:'11999990002',nome:'New customer',valor:'B'},
@@ -64,16 +64,15 @@ test('report recipient review blocks missing consent and conflicting identity an
       {id:101,celular:'11999990003',nome:'Mismatch',valor:'D'},
     ]});
     const input={snapshot_id:issued.snapshot_id,rows:[0],phone_column:'celular',id_column:'id',channel_id:f.channel.id,template_id:f.template.id,mapping:{1:'column:valor'}};
-    assert.match((await f.dispatch.preview(f.unit.id,f.user.id,input)).rows[0].reason,/autorização/);
+    assert.match((await f.dispatch.preview(f.unit.id,f.user.id,input)).rows[0].reason,/bloqueado/);
     await assert.rejects(f.dispatch.enqueue(f.unit.id,f.user.id,{...input,confirm:true,confirm_new_contacts:true}),/bloqueados/);
     const fresh={...input,rows:[1]};
     assert.equal((await f.dispatch.preview(f.unit.id,f.user.id,fresh)).rows[0].new_contact,true);
-    await assert.rejects(f.dispatch.enqueue(f.unit.id,f.user.id,{...fresh,confirm:true}),/novos destinatários/);
-    assert.equal((await f.dispatch.enqueue(f.unit.id,f.user.id,{...fresh,confirm:true,confirm_new_contacts:true})).queued,1);
+    assert.equal((await f.dispatch.enqueue(f.unit.id,f.user.id,{...fresh,confirm:true})).queued,1);
     const [created]=await f.db.select('fs_contacts',{unit_id:'eq.'+f.unit.id,phone:'eq.+5511999990002'});
     assert.equal(created.consent,true);assert.equal(created.source,'report');
     assert.match((await f.dispatch.preview(f.unit.id,f.user.id,{...input,rows:[2]})).rows[0].reason,/inválido/);
-    await f.db.update('fs_contacts',{id:'eq.'+f.contact.id},{consent:true});
+    await f.db.update('fs_contacts',{id:'eq.'+f.contact.id},{consent:true,send_blocked:false});
     assert.match((await f.dispatch.preview(f.unit.id,f.user.id,{...input,rows:[3]})).rows[0].reason,/difere/);
     const blocked=await f.dispatch.issue({unit:f.unit.id,user:f.user.id,code:'0186',rows:[{celular:'11999990001',valor:{private:'nested'}}]});
     assert.match((await f.dispatch.preview(f.unit.id,f.user.id,{...input,snapshot_id:blocked.snapshot_id,id_column:''})).rows[0].reason,/composto/);
