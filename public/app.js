@@ -713,9 +713,24 @@ async function action(name,btn){
     case 'simulate': {
       const result=await api(unitPath('simulate'),'POST',{rule_id:id});
       openDialog('Simulação da rotina',`<div class="stack"><p class="alert"><strong>${result.count} cliente(s) elegíveis neste momento.</strong></p>
-       <p class="hint">A simulação considera dados disponíveis, horário, consentimento e mensagens já registradas. Nenhuma mensagem foi adicionada à fila.</p>
-       ${result.names.length?`<p>${result.names.map(h).join(', ')}</p>`:''}
-       ${button('Fechar','close-dialog','','primary')}</div>`);return;
+       <p class="hint">Revise os clientes abaixo. Simular não envia nada; somente o botão de envio confirmado adiciona os selecionados à fila.</p>
+       ${result.items.length?`<div class="simulation-list" role="group" aria-label="Clientes elegíveis">
+        <label class="check simulation-all"><input type="checkbox" data-simulation-all checked> Selecionar todos os ${result.items.length} exibidos</label>
+        ${result.items.map(item=>`<label class="check simulation-item"><input type="checkbox" data-simulation-contact value="${h(item.id)}" checked>
+         <span><strong>${h(item.name)}</strong><small>${h(item.phone)}</small></span></label>`).join('')}</div>
+        <p class="hint">${result.count>result.items.length?`São exibidos os primeiros ${result.items.length} de ${result.count}.`:'Todos os elegíveis estão exibidos.'} O envio feito aqui registra o evento e impede que a automação o repita.</p>
+        <div class="actions dialog-footer">${button('Fechar','close-dialog','','ghost')}${button('Enviar selecionados','simulation-send',`data-id="${h(id)}"`,'primary')}</div>`:
+        `${empty('Nenhum cliente elegível','Ajuste os dados, o horário ou o intervalo da rotina e simule novamente.')}${button('Fechar','close-dialog','','primary')}`}
+       </div>`);return;
+    }
+    case 'simulation-send': {
+      const contacts=[...dialog.querySelectorAll('[data-simulation-contact]:checked')].map(el=>el.value);
+      if(!contacts.length)throw Error('Selecione pelo menos um cliente.');
+      if(!confirm(`Enviar agora para ${contacts.length} cliente(s) selecionado(s)?`))return;
+      const result=await api(unitPath('simulate-send'),'POST',{rule_id:id,contacts,confirm:true});
+      dialog.close();
+      toast(result.queued?`${result.queued} mensagem(ns) adicionada(s) à fila.`:'Estes eventos já estavam registrados.');
+      state.page='reports';await refreshData();render();return;
     }
   }
 }
@@ -838,6 +853,14 @@ document.addEventListener('submit',async e=>{
 });
 document.addEventListener('change',e=>{
   const el=e.target,form=el.form;
+  if(el.hasAttribute('data-simulation-all')){
+    dialog.querySelectorAll('[data-simulation-contact]').forEach(item=>item.checked=el.checked);
+  }
+  if(el.hasAttribute('data-simulation-contact')){
+    const all=dialog.querySelector('[data-simulation-all]');
+    const items=[...dialog.querySelectorAll('[data-simulation-contact]')];
+    if(all){all.checked=items.every(item=>item.checked);all.indeterminate=!all.checked&&items.some(item=>item.checked)}
+  }
   if(el.id==='catalog-channel')document.getElementById('model-table').innerHTML=modelTable(el.value);
   if(el.id==='send-channel'){
     state.channel=el.value;state.template='';

@@ -278,6 +278,45 @@ test('rules respect time zone, consent, future bookings and idempotency',()=>{
   assert.equal(candidates({...context,rule:{...rule,type:'return'},appointments:[{id:'old',contact_id:'c',service_id:'s',completed_at:'2026-10-01T13:00:00Z'}]}).length,1,'Overdue return remains eligible');
 });
 
+test('simulation reviews recipients, requires confirmation and queues selected events only once',async()=>{
+  const f=await fixture();
+  try{
+    const user={master:true};
+    const unit=(await f.db.insert('fs_units',{name:'Simulação',slug:'simulacao',catalog_tenant:'10'}))[0];
+    await f.db.rpc('fs_catalog_commit',{p_unit:unit.id,...Object.fromEntries(
+      Object.entries(await f.catalog()).filter(([key])=>key!=='tenantId').map(([key,value])=>['p_'+key,value])),
+      p_tenant:'10'});
+    const channel=(await f.db.select('fs_channels',{unit_id:'eq.'+unit.id,type:'eq.waba'}))[0];
+    const template=(await f.db.select('fs_templates',{unit_id:'eq.'+unit.id}))[0];
+    const claims=Buffer.from(JSON.stringify({tenantId:10,sessionId:1,channelType:'waba',exp:Date.now()/1000+3600})).toString('base64url');
+    await f.app.route(user,'POST','/units/'+unit.id+'/sender',{channel_id:channel.id,enabled:true,
+      url:'https://suporteapi.clickmassa.com.br/v1/api/external/00000000-0000-0000-0000-000000000001',
+      token:'fake.'+claims+'.signature'});
+    const contact=(await f.db.insert('fs_contacts',{unit_id:unit.id,name:'Cliente da simulação',phone:'+5511999990000',consent:true}))[0];
+    const service=(await f.db.insert('fs_services',{unit_id:unit.id,name:'Corte'}))[0];
+    await f.db.insert('fs_appointments',{unit_id:unit.id,contact_id:contact.id,service_id:service.id,
+      scheduled_at:new Date().toISOString(),completed_at:new Date().toISOString()});
+    const rule=(await f.db.insert('fs_rules',{unit_id:unit.id,name:'Revisão',type:'post_service',channel_id:channel.id,
+      template_id:template.id,mapping:{1:'customer.name'},enabled:false,send_time:'00:00'}))[0];
+    const preview=await f.app.route(user,'POST','/units/'+unit.id+'/simulate',{rule_id:rule.id});
+    assert.equal(preview.count,1);
+    assert.deepEqual(preview.items.map(item=>item.id),[contact.id]);
+    await assert.rejects(f.app.route(user,'POST','/units/'+unit.id+'/simulate-send',{
+      rule_id:rule.id,contacts:[contact.id],confirm:false}),/Confirme/);
+    const sent=await f.app.route(user,'POST','/units/'+unit.id+'/simulate-send',{
+      rule_id:rule.id,contacts:[contact.id],confirm:true});
+    assert.equal(sent.queued,1);
+    await assert.rejects(f.app.route(user,'POST','/units/'+unit.id+'/simulate-send',{
+      rule_id:rule.id,contacts:[contact.id],confirm:true}),/elegibilidade mudou/);
+    const jobs=await f.db.select('fs_jobs',{unit_id:'eq.'+unit.id});
+    assert.equal(jobs.length,1);
+    assert.equal(jobs[0].kind,'manual');
+  }finally{
+    await new Promise(resolve=>setTimeout(resolve,30));
+    await f.pg.close();
+  }
+});
+
 test('native scheduler delivers one automatic message and preserves idempotency on the next pass',async()=>{
   const f=await fixture();
   try{

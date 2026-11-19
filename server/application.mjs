@@ -642,7 +642,34 @@ export function application({ db, secrets, catalog = readCatalog, send = sendMes
       await deliveryConfig(id,rule.channel_id,rule.template_id);
       const context=await ruleContext(unit);
       const matches=candidates({...context,rule,preview:true});
-      return {count:matches.length,names:matches.slice(0,10).map(x=>x.contact.name)};
+      return {count:matches.length,items:matches.slice(0,100).map(x=>({
+        id:x.contact.id,name:x.contact.name,phone:x.contact.phone,
+      }))};
+    }
+    if(action==='simulate-send'&&method==='POST'){
+      assert(unit.role==='master'||unit.role==='manager','Esta ação exige um gestor.',403);
+      assert(input.confirm===true,'Confirme o envio para os clientes selecionados.');
+      assert(Array.isArray(input.contacts)&&input.contacts.length>=1&&input.contacts.length<=100,
+        'Selecione de 1 a 100 clientes.');
+      const selected=[...new Set(input.contacts.map(uuid))];
+      const rule=await one('fs_rules',{unit_id:eq(id),id:eq(uuid(input.rule_id))});
+      assert(rule,'Regra não encontrada.',404);
+      await deliveryConfig(id,rule.channel_id,rule.template_id);
+      const context=await ruleContext(unit);
+      const matches=candidates({...context,rule,preview:true});
+      const chosen=matches.filter(item=>selected.includes(item.contact.id));
+      assert(chosen.length===selected.length,
+        'A elegibilidade mudou. Simule novamente antes de enviar.');
+      const rows=[];
+      for(const item of chosen)rows.push({
+        channel_id:rule.channel_id,template_id:rule.template_id,contact_id:item.contact.id,rule_id:null,
+        phone:item.contact.phone,kind:'manual',idempotency_key:item.key,
+        payload:{mapping:rule.mapping,fields:await expand(context,item,rule),simulation_rule_id:rule.id,
+          appointment_id:item.event.appointment?.id},
+      });
+      const added=await db.rpc('fs_enqueue',{p_unit:id,p_rows:rows});
+      launch(tick);
+      return {queued:added,selected:selected.length};
     }
     throw new AppError('Rota não encontrada.',404);
   }

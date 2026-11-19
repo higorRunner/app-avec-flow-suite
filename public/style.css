@@ -1030,3 +1030,9 @@ dialog::backdrop{background:#030a1bd9;backdrop-filter:blur(7px)}
 @keyframes reveal{from{opacity:.3;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
 @media(max-width:780px){.auth-card{padding:26px}.mobile-brand{display:block;margin-bottom:5px}.topbar{backdrop-filter:none}.sidebar .brand-logo{width:210px}.selection-toolbar .actions{width:100%}.selection-toolbar .primary{flex:1}.rating-demo{gap:7px}.rating-demo span{min-width:43px;padding:7px}.content{padding-top:24px}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+.simulation-list{display:grid;gap:.5rem;max-height:min(46vh,28rem);overflow:auto;padding:.25rem}
+.simulation-list .check{margin:0}
+.simulation-all{position:sticky;top:0;z-index:1;background:var(--surface,#14233b);padding:.75rem;border-radius:.7rem}
+.simulation-item{align-items:center;padding:.7rem .8rem;border:1px solid var(--border,#334966);border-radius:.7rem}
+.simulation-item span{display:grid;gap:.15rem}
+.simulation-item small{color:var(--muted,#9fb0ca)}
