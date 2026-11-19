@@ -277,6 +277,11 @@ test('rules respect time zone, consent, future bookings and idempotency',()=>{
     'A paused simulation includes a completion whose configured delay ends today');
   assert.equal(candidates({...yesterday,rule:{...rule,delay_days:2}}).length,0,
     'Changing the delay changes the simulated completion date');
+  const finalized={...context,appointments:[{...context.appointments[0],status:'finalized'}]};
+  assert.equal(candidates({...finalized,rule:{...rule,appointment_statuses:['paid']}}).length,0,
+    'A finalized appointment is excluded when the rule accepts only paid appointments');
+  assert.equal(candidates({...finalized,rule:{...rule,appointment_statuses:['finalized','paid']}}).length,1,
+    'A completion is included when its AVEC status is selected');
   assert.equal(candidates({...context,rule:{...rule,type:'birthday'}}).length,1);
   assert.equal(candidates({...context,rule:{...rule,type:'cross_sell',target_service_id:'target'}}).length,1);
   assert.equal(candidates({...context,rule:{...rule,type:'birthday'},contacts:[{id:'c',consent:true,phone:'+5511999990000',birthday_month_day:'11-18'}]}).length,1);
@@ -300,7 +305,7 @@ test('simulation reviews recipients, requires confirmation and queues selected e
     const contact=(await f.db.insert('fs_contacts',{unit_id:unit.id,name:'Cliente da simulação',phone:'+5511999990000',consent:true}))[0];
     const service=(await f.db.insert('fs_services',{unit_id:unit.id,name:'Corte'}))[0];
     await f.db.insert('fs_appointments',{unit_id:unit.id,contact_id:contact.id,service_id:service.id,
-      scheduled_at:new Date().toISOString(),completed_at:new Date().toISOString()});
+      scheduled_at:new Date().toISOString(),completed_at:new Date().toISOString(),status:'finalized'});
     const rule=(await f.db.insert('fs_rules',{unit_id:unit.id,name:'Revisão',type:'post_service',channel_id:channel.id,
       template_id:template.id,mapping:{1:'customer.name'},enabled:false,send_time:'00:00'}))[0];
     const preview=await f.app.route(user,'POST','/units/'+unit.id+'/simulate',{rule_id:rule.id});
@@ -338,7 +343,7 @@ test('native scheduler delivers one automatic message and preserves idempotency 
     const contact=(await f.db.insert('fs_contacts',{unit_id:unit.id,name:'Cliente',phone:'+5511999990000',consent:true}))[0];
     const service=(await f.db.insert('fs_services',{unit_id:unit.id,name:'Corte'}))[0];
     await f.db.insert('fs_appointments',{unit_id:unit.id,contact_id:contact.id,service_id:service.id,
-      scheduled_at:new Date().toISOString(),completed_at:new Date().toISOString()});
+      scheduled_at:new Date().toISOString(),completed_at:new Date().toISOString(),status:'finalized'});
     await f.db.insert('fs_rules',{unit_id:unit.id,name:'Pós-serviço',type:'post_service',channel_id:channel.id,
       template_id:template.id,mapping:{1:'customer.name'},enabled:true,send_time:'00:00',
       armed_at:new Date(Date.now()-86400000).toISOString()});

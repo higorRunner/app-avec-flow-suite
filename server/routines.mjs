@@ -1,5 +1,6 @@
 const formatters = new Map();
 export const ruleTypes = ['post_service','csat','return','birthday','inactive','cross_sell'];
+export const appointmentStatuses = ['scheduled','confirmed','waiting','in_progress','finalized','paid','canceled','missed'];
 
 export function localDay(date, zone) {
   if (!formatters.has(zone)) formatters.set(zone, new Intl.DateTimeFormat('en-CA', {
@@ -24,6 +25,8 @@ export function candidates({ unit, rule, contacts, appointments, services, jobs,
   // catch-up work accumulated since activation.
   const armedDay=rule.armed_at?localDay(new Date(rule.armed_at),unit.timezone).day:today.day;
   const relevant = appointments.filter(a=>!a.canceled);
+  const allowedStatuses=Array.isArray(rule.appointment_statuses)&&rule.appointment_statuses.length?
+    rule.appointment_statuses:['finalized','paid'];
   const due = [];
   for (const contact of contacts) {
     if (!contact.consent||contact.send_blocked||!contact.phone) continue;
@@ -34,7 +37,7 @@ export function candidates({ unit, rule, contacts, appointments, services, jobs,
       if ((contact.birthday?.slice(5)||contact.birthday_month_day)!==anniversary.slice(5)) continue;
       event = { key:'birthday:'+anniversary,service:null,appointment:null };
     } else {
-      const past = history.filter(a=>a.completed_at && new Date(a.completed_at)<=now)
+      const past = history.filter(a=>a.completed_at && allowedStatuses.includes(a.status||'finalized')&&new Date(a.completed_at)<=now)
         .sort((a,b)=>Date.parse(b.completed_at)-Date.parse(a.completed_at));
       const matching = past.filter(a=>!rule.service_id || a.service_id===rule.service_id);
       if (rule.type==='inactive') {

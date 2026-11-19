@@ -6,7 +6,7 @@ import { fetchReportAll, fetchReportPage, AvecError, avecBirthday } from './prov
 import { syncAvecData, avecConfig } from './avec-sync.mjs';
 import reportCatalog from './providers/avec-catalog.json' with {type:'json'};
 import { professionalAlerts } from './alerts.mjs';
-import { candidates, ruleTypes } from './routines.mjs';
+import { candidates, ruleTypes, appointmentStatuses } from './routines.mjs';
 import { reportDispatch } from './report-dispatch.mjs';
 
 const eq = value => 'eq.' + value;
@@ -230,7 +230,7 @@ export function application({ db, secrets, catalog = readCatalog, send = sendMes
         rows.push({channel_id:rule.channel_id,template_id:rule.template_id,contact_id:item.contact.id,rule_id:rule.id,
           phone:item.contact.phone,kind:'automatic',idempotency_key:item.key,
           payload:{mapping:rule.mapping,rule_armed_at:rule.armed_at,fields:await expand(context,item,rule),
-            appointment_id:item.event.appointment?.id}});
+            appointment_id:item.event.appointment?.id,appointment_statuses:rule.appointment_statuses}});
       }
       if(rows.length) await db.rpc('fs_enqueue',{p_unit:unit.id,p_rows:rows});
     }
@@ -259,14 +259,16 @@ export function application({ db, secrets, catalog = readCatalog, send = sendMes
         const contact=await one('fs_contacts',{id:eq(job.contact_id),unit_id:eq(job.unit_id)});
         assert(contact?.consent&&!contact.send_blocked&&contact.phone===job.phone,'O cliente foi bloqueado ou mudou de telefone.');
       }
+      if(job.payload.appointment_id&&Array.isArray(job.payload.appointment_statuses)){
+        const appointment=await one('fs_appointments',{id:eq(job.payload.appointment_id),unit_id:eq(job.unit_id)});
+        assert(appointment?.completed_at&&!appointment.canceled&&job.payload.appointment_statuses.includes(appointment.status),
+          'O atendimento deixou de estar concluído no estado configurado.');
+      }
       if(job.rule_id){
         const rule=await one('fs_rules',{id:eq(job.rule_id),unit_id:eq(job.unit_id)});
         assert(rule?.enabled && Date.parse(rule.armed_at)===Date.parse(job.payload.rule_armed_at) && rule.channel_id===job.channel_id && rule.template_id===job.template_id &&
+          JSON.stringify(rule.appointment_statuses)===JSON.stringify(job.payload.appointment_statuses) &&
           Date.parse(rule.armed_at)<=Date.parse(job.created_at),'A regra foi pausada ou alterada.');
-        if(job.payload.appointment_id){
-          const appointment=await one('fs_appointments',{id:eq(job.payload.appointment_id),unit_id:eq(job.unit_id)});
-          assert(appointment?.completed_at&&!appointment.canceled,'O atendimento deixou de estar concluído.');
-        }
         if(['return','inactive','cross_sell'].includes(rule.type)){
           const future=await db.all('fs_appointments',{unit_id:eq(unit.id),contact_id:eq(job.contact_id),canceled:'eq.false'});
           assert(!future.some(a=>!a.completed_at&&Date.parse(a.scheduled_at)>Date.now()&&
@@ -575,7 +577,8 @@ export function application({ db, secrets, catalog = readCatalog, send = sendMes
       assert(contact&&service&&!Number.isNaN(date.getTime()),'Selecione cliente, serviço e data válidos.');
       if(input.completed_at) assert(!Number.isNaN(Date.parse(input.completed_at))&&Date.parse(input.completed_at)<=Date.now(),'Conclusão deve ser uma data passada.');
       return db.insert('fs_appointments',{unit_id:id,contact_id:contact.id,service_id:service.id,
-        scheduled_at:date.toISOString(),completed_at:input.completed_at||null,canceled:false});
+        scheduled_at:date.toISOString(),completed_at:input.completed_at||null,canceled:false,
+        status:input.completed_at?'finalized':'scheduled'});
     }
     if(action==='send'&&method==='POST'){
       assert(unit.active,'A unidade está desativada.');
@@ -617,9 +620,13 @@ export function application({ db, secrets, catalog = readCatalog, send = sendMes
       const values={unit_id:id,name:text(input.name,120),type:input.type,channel_id:channel.id,template_id:template.id,
         delay_days:Number(input.delay_days),cooldown_days:Number(input.cooldown_days),send_time:input.send_time,
         service_id:input.service_id||null,target_service_id:input.target_service_id||null,mapping:input.mapping||{},enabled,
+        appointment_statuses:Array.isArray(input.appointment_statuses)?[...new Set(input.appointment_statuses)]:[],
         armed_at:enabled?new Date().toISOString():null};
       assert(values.name&&/^([01]\d|2[0-3]):[0-5]\d$/.test(values.send_time),'Preencha nome e horário.');
       for(const n of [values.delay_days,values.cooldown_days]) assert(Number.isInteger(n)&&n>=0&&n<=3650,'Intervalo inválido.');
+      if(values.type!=='birthday')assert(values.appointment_statuses.length&&
+        values.appointment_statuses.every(status=>appointmentStatuses.includes(status)),
+        'Selecione pelo menos um estado válido do atendimento.');
       if(values.type==='cross_sell') assert(values.target_service_id,'Selecione o serviço recomendado.');
       if(values.type==='csat'){
         assert(survey?.configured,'Configure PUBLIC_ORIGIN no serviço para enviar avaliações.');
@@ -665,7 +672,7 @@ export function application({ db, secrets, catalog = readCatalog, send = sendMes
         channel_id:rule.channel_id,template_id:rule.template_id,contact_id:item.contact.id,rule_id:null,
         phone:item.contact.phone,kind:'manual',idempotency_key:item.key,
         payload:{mapping:rule.mapping,fields:await expand(context,item,rule),simulation_rule_id:rule.id,
-          appointment_id:item.event.appointment?.id},
+          appointment_id:item.event.appointment?.id,appointment_statuses:rule.appointment_statuses},
       });
       const added=await db.rpc('fs_enqueue',{p_unit:id,p_rows:rows});
       launch(tick);

@@ -4,6 +4,18 @@ import { avecBirthday, avecBirthdayMonthDay, formatAvecDate } from './providers/
 
 const eq=value=>'eq.'+value;
 const key=value=>createHash('sha256').update(String(value)).digest('hex');
+const appointmentStatus=value=>{
+  const status=String(value??'').trim().toLowerCase();
+  if(['agendado','1'].includes(status))return 'scheduled';
+  if(['confirmado','1.5'].includes(status))return 'confirmed';
+  if(['aguardando','2'].includes(status))return 'waiting';
+  if(['em atendimento','3'].includes(status))return 'in_progress';
+  if(['finalizado','3.5'].includes(status))return 'finalized';
+  if(['pago','4'].includes(status))return 'paid';
+  if(['cancelado','0'].includes(status))return 'canceled';
+  if(['faltou','0.6'].includes(status))return 'missed';
+  return 'scheduled';
+};
 export const avecDefaults={enabled:false,interval_minutes:15,history_days:90,future_days:30,salon_id:'',auto_import:true};
 export function avecConfig(input={}){
   const config={...avecDefaults,...input};
@@ -127,16 +139,18 @@ export async function syncAvecData({db,unit,token,report,onTrace,now=new Date()}
   // The finalized receipt confirms an actual completed service; planned times do not.
   const completed=await read('0186',{inicio:range.inicio,fim:formatAvecDate(now)});
   const completedKeys=new Set();
+  const receiptReservations=new Map();
   if(completed&&config.auto_import)for(const row of completed){
     if(row.tipo!=='Serviço'||!row.idComanda||!row.idItem)continue;
     const finished=avecDate(row.data_finalizada,unit.timezone);
     if(!finished||Date.parse(finished)>now.getTime())continue;
     completedKeys.add(`receipt:${row.idComanda}:${row.idItem}`);
+    if(row.reserva_id)receiptReservations.set(`receipt:${row.idComanda}:${row.idItem}`,String(row.reserva_id));
     const service=servicesByExternal.get(String(row.tipo_id));
     const person=contactsByExternal.get(String(row.salao_cliente_id))||await contact({...row,id:undefined});
     if(!service||!person){summary.skipped++;continue}
     await appointment({external_id:`receipt:${row.idComanda}:${row.idItem}`,contact_id:person.id,service_id:service.id,
-      scheduled_at:avecDate(row.data,unit.timezone)||finished,completed_at:finished,canceled:false,status:'completed',
+      scheduled_at:avecDate(row.data,unit.timezone)||finished,completed_at:finished,canceled:false,status:'finalized',
       professional_id:row.profissional_id?String(row.profissional_id):null,professional_name:text(row.profissional,120),arrived_at:null});
   }
   if(completed&&config.auto_import)for(const previous of appointments){
@@ -149,6 +163,7 @@ export async function syncAvecData({db,unit,token,report,onTrace,now=new Date()}
   const agenda=await read('0155',range);
   if(agenda&&config.auto_import){
     const ids=new Set();
+    const agendaStatuses=new Map();
     for(const row of agenda){
       const person=contactsByExternal.get(String(row.salao_cliente_id));
       const service=servicesByExternal.get(String(row.servico_id));
@@ -158,11 +173,11 @@ export async function syncAvecData({db,unit,token,report,onTrace,now=new Date()}
       if(!person||!service||!date){summary.skipped++;continue}
       const external='agenda:'+row.id;ids.add(external);
       const previous=knownAppointments.get(external);
-      const status=String(row.status??'').trim().toLowerCase();
-      const waiting=['aguardando','2'].includes(status),canceled=['cancelado','faltou','0','0.6'].includes(status);
+      const status=appointmentStatus(row.status);agendaStatuses.set(String(row.id),status);
+      const waiting=status==='waiting',canceled=['canceled','missed'].includes(status);
       const professional=professionalsByName.get(row.apelido);
       await appointment({external_id:external,contact_id:person.id,service_id:service.id,scheduled_at:date,completed_at:null,
-        canceled,status:waiting?'waiting':canceled?'canceled':['em atendimento','3'].includes(status)?'in_progress':'scheduled',
+        canceled,status,
         professional_id:professional?.external_id||null,professional_name:text(row.apelido,120),
         arrived_at:waiting?(previous?.arrived_at||now.toISOString()):null});
     }
@@ -171,6 +186,10 @@ export async function syncAvecData({db,unit,token,report,onTrace,now=new Date()}
     for(const old of appointments)if(old.external_id?.startsWith('agenda:')&&!ids.has(old.external_id)&&
       Date.parse(old.scheduled_at)>=start.getTime()&&Date.parse(old.scheduled_at)<=end.getTime())
       await appointment({...old,canceled:true,status:'removed',arrived_at:null});
+    for(const [external,reservation]of receiptReservations){
+      const receipt=appointmentBatch.get(external),status=agendaStatuses.get(reservation);
+      if(receipt&&status)appointmentBatch.set(external,{...receipt,status,canceled:['canceled','missed'].includes(status)});
+    }
   }
   for(let i=0,rows=[...appointmentBatch.values()];i<rows.length;i+=200)await db.upsert('fs_appointments',rows.slice(i,i+200),'unit_id,external_id');
   const stock=await read('0046');

@@ -7,6 +7,8 @@ const labels={queued:'Na fila',processing:'Resultado inconclusivo',accepted:'Ace
   read:'Lida',failed:'Falha',skipped:'Ignorada',pending:'Solicitado',syncing:'Conectando',ready:'Atualizado',error:'Falha',unconfigured:'Pendente'};
 const types={post_service:'Pós-atendimento',csat:'Pesquisa de satisfação',return:'Sugestão de retorno',
   birthday:'Aniversário',inactive:'Clientes inativos',cross_sell:'Venda complementar'};
+const appointmentStatusChoices=[['scheduled','Agendado'],['confirmed','Confirmado'],['waiting','Aguardando'],
+  ['in_progress','Em atendimento'],['finalized','Finalizado'],['paid','Pago'],['canceled','Cancelado'],['missed','Faltou']];
 const fieldChoices={'customer.name':'Nome do cliente','customer.phone':'Telefone do cliente','customer.email':'E-mail do cliente',
   'customer.birthday':'Nascimento','establishment.name':'Nome da unidade','service.name':'Nome do serviço',
   'appointment.scheduled_at':'Data do agendamento','appointment.completed_at':'Conclusão do atendimento',
@@ -519,6 +521,7 @@ async function membersDialog(){
 }
 function ruleDialog(rule={}){
   const channels=readyChannels().filter(c=>c.type==='waba');
+  const selectedStatuses=Array.isArray(rule.appointment_statuses)?rule.appointment_statuses:['finalized','paid'];
   openDialog(rule.id?'Editar rotina':'Nova rotina',`<form id="rule-form" class="stack" data-id="${h(rule.id||'')}">
    ${input('Nome da rotina','name','text',rule.name,'required maxlength="120"')}
    ${select('Quando executar','type',Object.entries(types),rule.type||'post_service','required')}
@@ -526,6 +529,10 @@ function ruleDialog(rule={}){
    <div class="form-grid">${input('Intervalo em dias','delay_days','number',rule.delay_days??(rule.type==='csat'?1:0),'required min="0" max="3650"')}
     ${input('Horário da unidade','send_time','time',(rule.send_time||'09:00').slice(0,5),'required')}</div>
    ${input('Intervalo mínimo entre mensagens ao cliente (dias)','cooldown_days','number',rule.cooldown_days??7,'required min="0" max="3650"')}
+   <fieldset id="rule-statuses" class="status-selector"><legend>Estados do atendimento considerados</legend>
+    <p class="hint">Além do estado escolhido, o atendimento precisa ter conclusão confirmada pela API do AVEC.</p>
+    <div class="status-options">${appointmentStatusChoices.map(([value,label])=>`<label class="check"><input type="checkbox" data-rule-status value="${value}" ${selectedStatuses.includes(value)?'checked':''}>${label}</label>`).join('')}</div>
+   </fieldset>
    ${select('Serviço realizado','service_id',[['','Todos os serviços'],...state.data.services.map(s=>[s.id,s.name])],rule.service_id)}
    <div id="target-service">${select('Serviço recomendado','target_service_id',[['','Selecione'],...state.data.services.map(s=>[s.id,s.name])],rule.target_service_id)}</div>
    ${select('Canal Oficial','rule-channel',[['','Selecione o canal'],...channels.map(c=>[c.id,c.name])],rule.channel_id,'required')}
@@ -551,6 +558,9 @@ function updateRuleType(){
   target.querySelector('select').required=type==='cross_sell';
   target.querySelector('select').disabled=type!=='cross_sell';
   form.elements.service_id.disabled=type==='birthday';
+  const statuses=form.querySelector('#rule-statuses');
+  statuses.hidden=type==='birthday';
+  statuses.querySelectorAll('input').forEach(input=>input.disabled=type==='birthday');
 }
 function updatePreview(form){
   const template=state.data.templates.find(t=>t.id===(form.id==='rule-form'?form.elements['rule-template'].value:state.template));
@@ -800,7 +810,8 @@ async function submit(form){
       await api(unitPath('appointments'),'POST',data);dialog.close();await refreshData();render();toast('Atendimento registrado.');return;
     case 'rule-form':
       await api(unitPath('rules'),'POST',{...data,id:form.dataset.id||null,channel_id:data['rule-channel'],
-        template_id:data['rule-template'],enabled:f.has('enabled'),mapping:readMapping(form)});
+        template_id:data['rule-template'],enabled:f.has('enabled'),mapping:readMapping(form),
+        appointment_statuses:[...form.querySelectorAll('[data-rule-status]:checked')].map(input=>input.value)});
       dialog.close();await refreshData();render();toast('Rotina salva.');return;
     case 'send-form': {
       const payload={kind:state.sendMode,channel_id:data['send-channel'],template_id:data['send-template']||null,

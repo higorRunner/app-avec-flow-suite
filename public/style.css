@@ -1036,3 +1036,8 @@ dialog::backdrop{background:#030a1bd9;backdrop-filter:blur(7px)}
 .simulation-item{align-items:center;padding:.7rem .8rem;border:1px solid var(--border,#334966);border-radius:.7rem}
 .simulation-item span{display:grid;gap:.15rem}
 .simulation-item small{color:var(--muted,#9fb0ca)}
+.status-selector{border:1px solid var(--line);border-radius:14px;padding:14px 16px}
+.status-selector legend{padding:0 7px;font-weight:700}
+.status-options{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-top:10px}
+.status-options .check{margin:0;padding:10px;border:1px solid var(--line);border-radius:10px}
+@media(max-width:680px){.status-options{grid-template-columns:repeat(2,minmax(0,1fr))}}

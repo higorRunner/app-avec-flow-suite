@@ -157,6 +157,7 @@ CREATE TABLE public.fs_rules (
  delay_days integer NOT NULL DEFAULT 0 CHECK(delay_days BETWEEN 0 AND 3650),
  cooldown_days integer NOT NULL DEFAULT 7 CHECK(cooldown_days BETWEEN 0 AND 3650),
  send_time time NOT NULL DEFAULT '09:00',
+ appointment_statuses jsonb NOT NULL DEFAULT '["finalized","paid"]'::jsonb CHECK(jsonb_typeof(appointment_statuses)='array'),
  mapping jsonb NOT NULL DEFAULT '{}' CHECK(jsonb_typeof(mapping)='object'),
  enabled boolean NOT NULL DEFAULT false,
  armed_at timestamptz,

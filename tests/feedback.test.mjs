@@ -78,7 +78,7 @@ test('next-day CSAT runs through the scheduler, public answer and isolated dashb
     const [service]=await f.db.insert('fs_services',{unit_id:unit.id,name:'Serviço concluído'});
     const yesterday=new Date(Date.now()-86400000).toISOString();
     const [appointment]=await f.db.insert('fs_appointments',{unit_id:unit.id,contact_id:contact.id,service_id:service.id,
-      scheduled_at:yesterday,completed_at:yesterday,source:'avec',status:'completed'});
+      scheduled_at:yesterday,completed_at:yesterday,source:'avec',status:'finalized'});
     await f.db.insert('fs_rules',{unit_id:unit.id,name:'CSAT no dia seguinte',type:'csat',channel_id:channel.id,
       template_id:template.id,mapping:{1:'feedback.url'},delay_days:1,enabled:true,send_time:'00:00',
       armed_at:new Date(Date.now()-3*86400000).toISOString()});

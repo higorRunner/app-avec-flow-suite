@@ -22,7 +22,7 @@ function providerRows(){
     '0229':[{id:77,nome:'Synthetic professional',apelido:'Artist',cargo:'Synthetic role'}],
     '0186':[
       {idComanda:500,idItem:501,salao_cliente_id:1,tipo:'Serviço',tipo_id:101,data:'2026-11-17',
-        data_finalizada:'2026-11-17 12:34:56',profissional_id:77,profissional:'Artist'},
+        data_finalizada:'2026-11-17 12:34:56',profissional_id:77,profissional:'Artist',reserva_id:604},
       {idComanda:500,idItem:502,salao_cliente_id:1,tipo:'Serviço',tipo_id:101,data:'2026-11-17',data_finalizada:null},
       {idComanda:500,idItem:503,salao_cliente_id:1,tipo:'Produto',tipo_id:101,data:'2026-11-17',data_finalizada:'2026-11-17 13:00:00'},
       {idComanda:500,idItem:504,salao_cliente_id:3,nome:'Conflicting phone customer',celular:'11999990002',
@@ -35,6 +35,7 @@ function providerRows(){
       {id:601,salao_cliente_id:1,servico_id:101,data:'2026-11-19',hora_ini:630,apelido:'Artist',status:'Agendado'},
       {id:602,salao_cliente_id:2,servico_id:101,data:'2026-11-18',hora_ini:660,apelido:'Artist',status:'Aguardando'},
       {id:603,salao_cliente_id:1,servico_id:101,data:'2026-11-20',hora_ini:720,apelido:'Artist',status:'Cancelado'},
+      {id:604,salao_cliente_id:1,servico_id:101,data:'2026-11-17',hora_ini:720,apelido:'Artist',status:'Pago'},
     ],
     '0046':[{nome:'Synthetic product',marca:'Synthetic brand',medida:'un',atual:2,estoque_minimo:5,diferenca:3}],
   };
@@ -89,9 +90,10 @@ test('AVEC sync is idempotent, preserves local settings, records real completion
     assert.equal(service.return_days,30);
     const professional=(await f.db.select('fs_professionals',{unit_id:'eq.'+unit.id}))[0];
     let appointments=await f.db.select('fs_appointments',{unit_id:'eq.'+unit.id});
-    assert.equal(appointments.length,6);
+    assert.equal(appointments.length,7);
     const completed=appointments.find(a=>a.external_id==='receipt:500:501');
     assert.equal(new Date(completed.completed_at).toISOString(),'2026-11-17T15:34:56.000Z');
+    assert.equal(completed.status,'paid','Receipt completion inherits the current AVEC reservation status');
     assert(!appointments.some(a=>a.external_id==='receipt:500:502'),'An open receipt cannot prove completion');
     assert(!appointments.some(a=>a.external_id==='receipt:500:503'),'A product sale is not a service appointment');
     assert(!appointments.some(a=>a.external_id==='receipt:500:504'),'A conflicting customer must not receive another customer history');
@@ -119,7 +121,7 @@ test('AVEC sync is idempotent, preserves local settings, records real completion
     assert.equal(updatedProfessional.phone,'+5511999990099');
     assert.equal(updatedProfessional.enabled,true);
     appointments=await f.db.select('fs_appointments',{unit_id:'eq.'+unit.id});
-    assert.equal(appointments.length,6);
+    assert.equal(appointments.length,7);
     assert(appointments.every(a=>ids.get(a.external_id)===a.id));
     assert.equal(new Date(appointments.find(a=>a.external_id==='agenda:602').arrived_at).toISOString(),now.toISOString());
     rows['0155']=rows['0155'].filter(a=>a.id!==602);

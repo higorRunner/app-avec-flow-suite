@@ -14,7 +14,8 @@ export async function fixture() {
   const schema=(await readFile(new URL('../sql/RECRIAR_FLOWSUITE.sql',import.meta.url),'utf8'))+'\n'+
     (await readFile(new URL('../sql/ATUALIZAR_INTEGRACAO_AVEC.sql',import.meta.url),'utf8'))+'\n'+
     (await readFile(new URL('../sql/ATUALIZAR_ENVIOS_RELATORIOS.sql',import.meta.url),'utf8'))+'\n'+
-    (await readFile(new URL('../sql/ATUALIZAR_DISPONIBILIDADE_CLIENTES.sql',import.meta.url),'utf8'));
+    (await readFile(new URL('../sql/ATUALIZAR_DISPONIBILIDADE_CLIENTES.sql',import.meta.url),'utf8'))+'\n'+
+    (await readFile(new URL('../sql/ATUALIZAR_STATUS_AUTOMACOES.sql',import.meta.url),'utf8'));
   await pg.exec(schema);
   const data={pg,schema};
   function where(params,values) {
