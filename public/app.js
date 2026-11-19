@@ -530,7 +530,7 @@ function ruleDialog(rule={}){
     ${input('Horário da unidade','send_time','time',(rule.send_time||'09:00').slice(0,5),'required')}</div>
    ${input('Intervalo mínimo entre mensagens ao cliente (dias)','cooldown_days','number',rule.cooldown_days??7,'required min="0" max="3650"')}
    <fieldset id="rule-statuses" class="status-selector"><legend>Estados do atendimento considerados</legend>
-    <p class="hint">Além do estado escolhido, o atendimento precisa ter conclusão confirmada pela API do AVEC.</p>
+    <p class="hint">O horário do agendamento precisa ter passado. Quando a AVEC informar a conclusão, o sistema usa essa data mais precisa.</p>
     <div class="status-options">${appointmentStatusChoices.map(([value,label])=>`<label class="check"><input type="checkbox" data-rule-status value="${value}" ${selectedStatuses.includes(value)?'checked':''}>${label}</label>`).join('')}</div>
    </fieldset>
    ${select('Serviço realizado','service_id',[['','Todos os serviços'],...state.data.services.map(s=>[s.id,s.name])],rule.service_id)}
@@ -723,7 +723,7 @@ async function action(name,btn){
     case 'simulate': {
       const result=await api(unitPath('simulate'),'POST',{rule_id:id});
       openDialog('Simulação da rotina',`<div class="stack"><p class="alert"><strong>${result.count} cliente(s) elegíveis neste momento.</strong></p>
-       <p class="hint">A elegibilidade usa a conclusão confirmada do atendimento no AVEC mais o intervalo configurado. Simular não envia nada; somente o botão de envio confirmado adiciona os selecionados à fila.</p>
+       <p class="hint">A elegibilidade usa os estados selecionados e a data do atendimento; quando disponível, usa a conclusão confirmada pela AVEC. Simular não envia nada; somente o botão de envio confirmado adiciona os selecionados à fila.</p>
        ${result.items.length?`<div class="simulation-list" role="group" aria-label="Clientes elegíveis">
         <label class="check simulation-all"><input type="checkbox" data-simulation-all checked> Selecionar todos os ${result.items.length} exibidos</label>
         ${result.items.map(item=>`<label class="check simulation-item"><input type="checkbox" data-simulation-contact value="${h(item.id)}" checked>

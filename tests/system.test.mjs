@@ -282,6 +282,15 @@ test('rules respect time zone, consent, future bookings and idempotency',()=>{
     'A finalized appointment is excluded when the rule accepts only paid appointments');
   assert.equal(candidates({...finalized,rule:{...rule,appointment_statuses:['finalized','paid']}}).length,1,
     'A completion is included when its AVEC status is selected');
+  const occurredAgenda={...context,appointments:[{id:'agenda',external_id:'agenda:10',contact_id:'c',service_id:'s',
+    scheduled_at:'2026-11-18T13:00:00Z',completed_at:null,status:'scheduled'}]};
+  assert.equal(candidates({...occurredAgenda,rule:{...rule,appointment_statuses:['scheduled']}}).length,1,
+    'A past AVEC appointment is eligible when its current status was explicitly selected');
+  assert.equal(candidates({...occurredAgenda,rule:{...rule,appointment_statuses:['paid']}}).length,0,
+    'A past AVEC appointment is excluded when its current status was not selected');
+  assert.equal(candidates({...occurredAgenda,rule:{...rule,appointment_statuses:['scheduled']},
+    appointments:[{...occurredAgenda.appointments[0],scheduled_at:'2026-11-18T18:00:00Z'}]}).length,0,
+    'A future appointment is never eligible even when its status was selected');
   assert.equal(candidates({...context,rule:{...rule,type:'birthday'}}).length,1);
   assert.equal(candidates({...context,rule:{...rule,type:'cross_sell',target_service_id:'target'}}).length,1);
   assert.equal(candidates({...context,rule:{...rule,type:'birthday'},contacts:[{id:'c',consent:true,phone:'+5511999990000',birthday_month_day:'11-18'}]}).length,1);

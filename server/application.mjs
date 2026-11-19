@@ -261,8 +261,10 @@ export function application({ db, secrets, catalog = readCatalog, send = sendMes
       }
       if(job.payload.appointment_id&&Array.isArray(job.payload.appointment_statuses)){
         const appointment=await one('fs_appointments',{id:eq(job.payload.appointment_id),unit_id:eq(job.unit_id)});
-        assert(appointment?.completed_at&&!appointment.canceled&&job.payload.appointment_statuses.includes(appointment.status),
-          'O atendimento deixou de estar concluído no estado configurado.');
+        const occurred=appointment?.completed_at&&Date.parse(appointment.completed_at)<=Date.now()||
+          appointment?.external_id?.startsWith('agenda:')&&Date.parse(appointment.scheduled_at)<=Date.now();
+        assert(appointment&&!appointment.canceled&&occurred&&job.payload.appointment_statuses.includes(appointment.status),
+          'O atendimento deixou de estar no estado configurado ou ainda não ocorreu.');
       }
       if(job.rule_id){
         const rule=await one('fs_rules',{id:eq(job.rule_id),unit_id:eq(job.unit_id)});

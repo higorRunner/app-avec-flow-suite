@@ -27,6 +27,12 @@ export function candidates({ unit, rule, contacts, appointments, services, jobs,
   const relevant = appointments.filter(a=>!a.canceled);
   const allowedStatuses=Array.isArray(rule.appointment_statuses)&&rule.appointment_statuses.length?
     rule.appointment_statuses:['finalized','paid'];
+  const occurredAt=appointment=>{
+    if(!allowedStatuses.includes(appointment.status||'finalized'))return null;
+    if(appointment.completed_at&&Date.parse(appointment.completed_at)<=now.getTime())return appointment.completed_at;
+    if(appointment.external_id?.startsWith('agenda:')&&Date.parse(appointment.scheduled_at)<=now.getTime())return appointment.scheduled_at;
+    return null;
+  };
   const due = [];
   for (const contact of contacts) {
     if (!contact.consent||contact.send_blocked||!contact.phone) continue;
@@ -37,13 +43,13 @@ export function candidates({ unit, rule, contacts, appointments, services, jobs,
       if ((contact.birthday?.slice(5)||contact.birthday_month_day)!==anniversary.slice(5)) continue;
       event = { key:'birthday:'+anniversary,service:null,appointment:null };
     } else {
-      const past = history.filter(a=>a.completed_at && allowedStatuses.includes(a.status||'finalized')&&new Date(a.completed_at)<=now)
-        .sort((a,b)=>Date.parse(b.completed_at)-Date.parse(a.completed_at));
+      const past = history.filter(a=>occurredAt(a))
+        .sort((a,b)=>Date.parse(occurredAt(b))-Date.parse(occurredAt(a)));
       const matching = past.filter(a=>!rule.service_id || a.service_id===rule.service_id);
       if (rule.type==='inactive') {
         if (!past[0] || (rule.service_id && past[0].service_id!==rule.service_id) ||
             history.some(a=>!a.completed_at && new Date(a.scheduled_at)>now)) continue;
-        const day = addDays(localDay(new Date(past[0].completed_at),unit.timezone).day,rule.delay_days);
+        const day = addDays(localDay(new Date(occurredAt(past[0])),unit.timezone).day,rule.delay_days);
         if (day>today.day) continue;
         event = {key:past[0].id,appointment:past[0],service:services.find(s=>s.id===past[0].service_id)};
       } else {
@@ -51,7 +57,7 @@ export function candidates({ unit, rule, contacts, appointments, services, jobs,
         const appointment = matching.find(a=>{
           const service = services.find(s=>s.id===a.service_id);
           const delay = rule.type==='return' ? service?.return_days??rule.delay_days : rule.delay_days;
-          const day=addDays(localDay(new Date(a.completed_at),unit.timezone).day,delay);
+          const day=addDays(localDay(new Date(occurredAt(a)),unit.timezone).day,delay);
           if(['return','cross_sell'].includes(rule.type))return day<=today.day;
           // Catch up a missed run after downtime, while avoiding old CSAT/post
           // messages whose due date predates activation of this rule.
@@ -59,10 +65,13 @@ export function candidates({ unit, rule, contacts, appointments, services, jobs,
         });
         if (!appointment) continue;
         if (rule.type==='return' && history.some(a=>a.service_id===appointment.service_id &&
-          (a.completed_at>appointment.completed_at || (!a.completed_at && new Date(a.scheduled_at)>now)))) continue;
+          (Date.parse(occurredAt(a)||0)>Date.parse(occurredAt(appointment)||0) || (!occurredAt(a) && new Date(a.scheduled_at)>now)))) continue;
         const service = services.find(s=>s.id===(rule.type==='cross_sell'?rule.target_service_id:appointment.service_id));
-        if (rule.type==='cross_sell' && (!service || history.some(a=>a.service_id===service.id &&
-          (new Date(a.completed_at||a.scheduled_at)>new Date(appointment.completed_at))))) continue;
+        if(rule.type==='cross_sell'){
+          if(!service)continue;
+          if(history.some(a=>a.service_id===service.id&&
+            new Date(occurredAt(a)||a.scheduled_at)>new Date(occurredAt(appointment))))continue;
+        }
         event={key:appointment.id,appointment,service};
       }
     }
