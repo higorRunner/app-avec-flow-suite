@@ -63,7 +63,7 @@ As credenciais de integração são criptografadas com AES-256-GCM. O servidor u
 ## Primeiro uso
 
 1. No painel master, crie a unidade e abra **Integrações**.
-2. Cadastre a **URL base da API Clickmassa**, o e-mail e a senha e clique em **Salvar e importar catálogo**. O servidor acrescenta as rotas de login, canais e modelos à base cadastrada. A empresa é identificada pelo retorno do login. Canais e modelos são importados e o estado aparece na mesma página.
+2. Cadastre a **URL base da API Clickmassa**, o e-mail e a senha e clique em **Salvar | importar canais**. O servidor acrescenta as rotas de login, canais e modelos à base cadastrada. A empresa é identificada pelo retorno do login. Canais e modelos são importados e o estado aparece na mesma página.
 3. Em **Canais de envio**, configure a URL da API externa e o token emitido para cada canal. Uma URL contendo o parâmetro token pode ser colada diretamente. O token será extraído e enviado pelo servidor no header de autorização.
 4. Marque **Liberar envios neste canal** e abra a operação da unidade.
 5. Em **Envios → Envio de teste**, informe um telefone da equipe que autorizou o teste, selecione o canal e revise o conteúdo. No Oficial, use um modelo textual aprovado. No QR Code, preencha a mensagem e, se desejar, uma nota interna.

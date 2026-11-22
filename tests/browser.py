@@ -42,7 +42,7 @@ with sync_playwright() as p:
     page.get_by_label("URL base da API Clickmassa").fill("https://api.custom.test")
     page.get_by_label("E-mail Clickmassa").fill("test@example.test")
     page.get_by_label("Senha Clickmassa").fill("fake-provider-password")
-    page.get_by_role("button", name="Salvar e importar catálogo").click()
+    page.get_by_role("button", name="Salvar | Importar canais").click()
     expect(page.get_by_role("cell", name="Oficial teste", exact=True)).to_be_visible(timeout=15000)
     expect(page.get_by_label("Log de consultas")).to_have_value(__import__('re').compile("Canais: 2"))
     assert "fake-provider-password" not in page.get_by_label("Log de consultas").input_value()
