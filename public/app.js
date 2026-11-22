@@ -209,7 +209,7 @@ function integrationPage(){
      ${input('E-mail Clickmassa','catalog_email','email',info.email,'required autocomplete="off"')}
      ${input('Senha Clickmassa','catalog_password','password','','autocomplete="new-password" '+(!info.email?'required':''))}
      ${info.email?'<p class="hint">Preencha a senha apenas para substituir a credencial cadastrada.</p>':''}
-     <div class="actions"><button class="btn primary" type="submit">Salvar e importar catálogo</button>
+     <div class="actions"><button class="btn primary" type="submit">Salvar | Importar canais</button>
       ${info.email?button('Sincronizar agora','sync-now','','small'):''}</div>
     </form>
     ${u.catalog_tenant?`<p class="hint">Empresa identificada pelo Clickmassa · ${h(u.catalog_tenant)}</p>`:''}
