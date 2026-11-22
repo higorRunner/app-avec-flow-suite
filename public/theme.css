@@ -1,0 +1,17 @@
+:root {
+  font-family:Inter,"Segoe UI",Arial,sans-serif;
+  color:#e7f0ff;
+  background:#0b1530;
+  font-synthesis:none;
+  color-scheme:dark;
+  --ink:#e7f0ff;
+  --muted:#a6b8d8;
+  --line:#2b4166;
+  --accent:#278df2;
+  --surface:#14233f;
+  --red:#ff9cab;
+  --focus:#65d9fa;
+  --action:linear-gradient(110deg,#185eae,#166582);
+  --card-radius:1.25rem;
+  --field-radius:.6875rem;
+}

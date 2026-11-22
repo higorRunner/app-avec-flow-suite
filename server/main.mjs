@@ -8,8 +8,15 @@ import { AppError, assert, digest, passwordHash, passwordMatches, secretBox, ses
 
 const files = new Map([
   ['/', ['index.html','text/html; charset=utf-8']],
+  ['/client.js',['client.js','text/javascript; charset=utf-8']],
+  ['/bootstrap.js',['bootstrap.js','text/javascript; charset=utf-8']],
   ['/app.js',['app.js','text/javascript; charset=utf-8']],
+  ['/ui.js',['ui.js','text/javascript; charset=utf-8']],
+  ['/message-contract.js',['message-contract.js','text/javascript; charset=utf-8']],
+  ['/message-dialog.js',['message-dialog.js','text/javascript; charset=utf-8']],
+  ['/message-picker.js',['message-picker.js','text/javascript; charset=utf-8']],
   ['/report-composer.js',['report-composer.js','text/javascript; charset=utf-8']],
+  ['/theme.css',['theme.css','text/css; charset=utf-8']],
   ['/style.css',['style.css','text/css; charset=utf-8']],
   ['/avaliar',['feedback.html','text/html; charset=utf-8']],
   ['/feedback.js',['feedback.js','text/javascript; charset=utf-8']],
@@ -26,7 +33,7 @@ export function createAppServer({ db, app, survey, version='rebuild-1', secure=t
     try {
       await db.select('fs_runtime',{limit:1});
       readiness={ok:true,message:'Aplicação e banco conectados.'};
-    } catch(error) {readiness={ok:false,message:error.message}}
+    } catch {readiness={ok:false,message:'O banco está indisponível.'}}
     return readiness;
   }
   async function body(req) {

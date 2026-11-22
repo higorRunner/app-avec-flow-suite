@@ -1,3 +1,4 @@
+import { validContextMapping, validParameters } from '../public/message-contract.js';
 import { randomUUID } from 'node:crypto';
 import { assert, AppError, text, phone, uuid, passwordHash } from './security.mjs';
 import { readCatalog, senderEndpoint, messagePayload, sendMessage, ProviderError } from './providers/clickmassa.mjs';
@@ -10,8 +11,6 @@ import { candidates, ruleTypes, appointmentStatuses } from './routines.mjs';
 import { reportDispatch } from './report-dispatch.mjs';
 
 const eq = value => 'eq.' + value;
-const fields = ['customer.name','customer.phone','customer.email','customer.birthday','service.name',
-  'appointment.scheduled_at','appointment.completed_at','establishment.name','feedback.url'];
 const safeUnit = ({ avec_sample, ...unit }) => ({ ...unit, sample_columns:Object.keys(avec_sample?.[0]||{}) });
 
 export function application({ db, secrets, catalog = readCatalog, send = sendMessage, report = fetchReportAll,
@@ -54,8 +53,12 @@ export function application({ db, secrets, catalog = readCatalog, send = sendMes
     return {...record,role:membership.role};
   }
   function master(user) { assert(user.master,'Acesso restrito ao painel master.',403); }
-  async function unitData(user,id) {
-    const unit=await access(user,id);
+  function recentJobs(id, where={}) {
+    return db.select('fs_jobs',{...where,unit_id:eq(id),select:'id,created_at,kind,phone,status,error,external_id',
+      order:'created_at.desc,id.desc',limit:100});
+  }
+  async function unitData(unit) {
+    const id=unit.id;
     const [channels,templates,contacts,services,appointments,rules,jobs,events]=await Promise.all([
       db.select('fs_channels',{unit_id:eq(id),order:'name'}),
       db.select('fs_templates',{unit_id:eq(id),order:'name'}),
@@ -63,7 +66,7 @@ export function application({ db, secrets, catalog = readCatalog, send = sendMes
       db.select('fs_services',{unit_id:eq(id),order:'name'}),
       db.select('fs_appointments',{unit_id:eq(id),order:'scheduled_at.desc',limit:100}),
       db.select('fs_rules',{unit_id:eq(id),order:'name'}),
-      db.select('fs_jobs',{unit_id:eq(id),order:'created_at.desc',limit:100}),
+      recentJobs(id),
       db.select('fs_events',{unit_id:eq(id),event:'neq.diagnostic',order:'created_at.desc',limit:30}),
     ]);
     const [professionals,stock,feedback]=await Promise.all([
@@ -357,7 +360,8 @@ export function application({ db, secrets, catalog = readCatalog, send = sendMes
     assert(parts[0]==='units'&&parts[1],'Rota não encontrada.',404);
     const id=uuid(parts[1]),action=parts[2]||'data';
     const unit=await access(user,id,method!=='GET',action==='rules');
-    if(action==='data'&&method==='GET') return unitData(user,id);
+    if(action==='data'&&method==='GET') return unitData(unit);
+    if(action==='jobs'&&method==='GET')return recentJobs(id);
     if(action==='settings'&&method==='GET'){
       assert(unit.role==='master'||unit.role==='manager','Esta ação exige um gestor.',403);
       const settings=await one('fs_alert_settings',{unit_id:eq(id)});
@@ -380,16 +384,11 @@ export function application({ db, secrets, catalog = readCatalog, send = sendMes
         const config={arrival_mapping:a.arrival_mapping||{},stock_mapping:a.stock_mapping||{},
           stock_cooldown_days:Number(a.stock_cooldown_days??7),armed_at:new Date().toISOString()};
         assert(Number.isInteger(config.stock_cooldown_days)&&config.stock_cooldown_days>=1&&config.stock_cooldown_days<=365,'Intervalo de estoque inválido.');
-        const allowed=['professional.name','customer.name','service.name','appointment.scheduled_at','product.name','product.quantity','product.minimum','establishment.name'];
         for(const kind of ['arrival','stock'])if(a[kind+'_enabled']){
           const delivery=await deliveryConfig(id,uuid(a.channel_id),a[kind+'_template_id']);
           assert(delivery.channel.type==='waba','Os alertas usam modelos do canal Oficial.');
-          for(const variable of delivery.template.variables){
-            const field=config[kind+'_mapping'][variable];
-            assert(allowed.includes(field)&&!(kind==='arrival'&&field.startsWith('product.'))&&
-              !(kind==='stock'&&['customer.name','service.name','appointment.scheduled_at'].includes(field)),
-              'Preencha os campos do modelo com informações disponíveis para este aviso.');
-          }
+          assert(validContextMapping(kind,delivery.template.variables,config[kind+'_mapping']),
+            'Preencha os campos do modelo com informações disponíveis para este aviso.');
         }
         // A config revision invalidates queued notifications; avoid historical arrivals on enable.
         await db.upsert('fs_alert_settings',{unit_id:id,arrival_enabled:a.arrival_enabled===true,stock_enabled:a.stock_enabled===true,
@@ -443,7 +442,7 @@ export function application({ db, secrets, catalog = readCatalog, send = sendMes
     if(action==='contacts'&&parts[3]&&parts[4]==='history'&&method==='GET'){
       const contact=await one('fs_contacts',{unit_id:eq(id),id:eq(uuid(parts[3]))});assert(contact,'Cliente não encontrado.',404);
       return {contact,appointments:await db.select('fs_appointments',{unit_id:eq(id),contact_id:eq(contact.id),order:'scheduled_at.desc',limit:300}),
-        jobs:await db.select('fs_jobs',{unit_id:eq(id),contact_id:eq(contact.id),order:'created_at.desc',limit:100}),
+        jobs:await recentJobs(id,{contact_id:eq(contact.id)}),
         feedback:await db.select('fs_feedback',{unit_id:eq(id),contact_id:eq(contact.id),select:'id,score,comment,answered_at',order:'created_at.desc',limit:100})};
     }
     if(action==='active'&&method==='POST'){
@@ -598,9 +597,8 @@ export function application({ db, secrets, catalog = readCatalog, send = sendMes
         assert(recipients.every(contact=>contact.phone),'Complete os telefones dos clientes selecionados.');
       }
       if(channel.type==='waba'){
-        if(test) assert(Array.isArray(input.params)&&input.params.length===template.variables.length&&
-          input.params.every(p=>typeof p==='string'&&p.trim()&&p.length<=1024),'Preencha todos os valores do modelo.');
-        else for(const key of template.variables) assert(fields.includes(input.mapping?.[key]),'Escolha a informação de cada campo do modelo.');
+        if(test) assert(validParameters(template.variables,input.params),'Preencha todos os valores do modelo.');
+        else assert(validContextMapping('manual',template.variables,input.mapping),'Escolha a informação de cada campo do modelo.');
       }else assert(text(input.body,4097)&&input.body.length<=4096,'Preencha uma mensagem com até 4.096 caracteres.');
       assert(!input.note||typeof input.note==='string'&&input.note.length<=1000,'A nota interna pode ter até 1.000 caracteres.');
       const rows=recipients.map(c=>({
@@ -632,11 +630,10 @@ export function application({ db, secrets, catalog = readCatalog, send = sendMes
       if(values.type==='cross_sell') assert(values.target_service_id,'Selecione o serviço recomendado.');
       if(values.type==='csat'){
         assert(survey?.configured,'Configure PUBLIC_ORIGIN no serviço para enviar avaliações.');
-        assert(Object.values(values.mapping).includes('feedback.url'),'Inclua o link da avaliação em um campo do modelo CSAT.');
       }
       for(const serviceId of [values.service_id,values.target_service_id]) if(serviceId) assert(await one('fs_services',{unit_id:eq(id),id:eq(uuid(serviceId))}),'Serviço inválido.');
-      for(const key of template.variables) assert(fields.includes(values.mapping[key])&&
-        (values.mapping[key]!=='feedback.url'||values.type==='csat'),'Preencha todos os campos do modelo.');
+      assert(validContextMapping(values.type==='csat'?'csat':'rule',template.variables,values.mapping),
+        values.type==='csat'?'Preencha os campos e inclua o link da avaliação em um campo do modelo CSAT.':'Preencha todos os campos do modelo.');
       if(input.id) return db.update('fs_rules',{id:eq(uuid(input.id)),unit_id:eq(id)},values);
       return db.insert('fs_rules',values);
     }

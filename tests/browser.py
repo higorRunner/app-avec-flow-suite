@@ -8,7 +8,8 @@ from pathlib import Path
 from playwright.sync_api import expect, sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1]
-BASE = "http://127.0.0.1:8771"
+BASE = "http://127.0.0.1:" + os.getenv("FLOWSUITE_TEST_PORT", "8771")
+ARTIFACTS = Path(os.getenv("FLOWSUITE_TEST_ARTIFACTS", ROOT/".test-deps"))
 
 with sync_playwright() as p:
     options = {"executable_path": os.environ["FLOWSUITE_TEST_BROWSER"]} if os.environ.get("FLOWSUITE_TEST_BROWSER") else {}
@@ -17,7 +18,56 @@ with sync_playwright() as p:
     page.set_default_timeout(10000)
     errors = []
     page.on("pageerror", lambda error: errors.append(str(error)))
+    requests = []
+    page.on("request", lambda request: requests.append(request.url))
+
+    audits = {}
+    axe_path = os.getenv("FLOWSUITE_TEST_AXE")
+
+    def accessibility(view, name):
+        if not axe_path or name in audits:
+            return
+        view.evaluate(Path(axe_path).read_text(encoding="utf-8"))
+        findings = view.evaluate("""async () => {
+          const report = await axe.run(document, {runOnly: {type:'tag',values:['wcag2a','wcag2aa','wcag21aa','wcag22aa']}});
+          return report.violations.map(v=>({id:v.id,nodes:v.nodes.map(n=>({target:n.target,summary:n.failureSummary}))}));
+        }""")
+        audits[name] = findings
+        (ARTIFACTS/"accessibility.json").write_text(json.dumps(audits, indent=2), encoding="utf-8")
+
+    def configure_message(label, source, literal=False):
+        page.get_by_role("button", name="Escolher " + label.lower(), exact=True).click()
+        picker = page.get_by_role("dialog", name=label, exact=True)
+        search = picker.get_by_label("Buscar modelos")
+        expect(search).to_be_focused()
+        search.fill("sem correspondência")
+        expect(picker.get_by_text("Nenhum modelo corresponde à busca.")).to_be_visible()
+        search.fill("bem")
+        picker.get_by_label("Modelos aprovados").select_option(label="Bem-vindo")
+        if literal:
+            picker.get_by_label("Valor do campo 1").fill(source)
+            expect(picker.locator(".message-bubble")).to_have_text("Olá " + source)
+            for width in [360, 768, 1024, 1440]:
+                page.set_viewport_size({"width":width,"height":850})
+                assert picker.evaluate("el=>el.scrollWidth<=el.clientWidth")
+                assert page.evaluate("document.documentElement.scrollWidth<=innerWidth")
+            accessibility(page, "picker")
+            page.screenshot(path=str(ARTIFACTS/"message-picker.png"))
+            original = picker.locator(".message-bubble").screenshot(animations="disabled")
+        else:
+            picker.get_by_label("Informação do campo 1").select_option(source)
+        picker.get_by_role("button", name="Confirmar modelo").click()
+        expect(picker).to_be_hidden()
+        edit = page.get_by_role("button", name="Editar " + label.lower(), exact=True)
+        expect(edit).to_be_focused()
+        edit.click()
+        if literal:
+            assert original == picker.locator(".message-bubble").screenshot(animations="disabled")
+        picker.get_by_label("Buscar modelos").press("Escape")
+        expect(edit).to_be_focused()
+
     page.goto(BASE)
+    accessibility(page, "login")
     page.get_by_label("E-mail", exact=True).fill("admin@example.test")
     page.get_by_label("Senha", exact=True).fill("temporary-password")
     page.get_by_role("button", name="Entrar", exact=True).click()
@@ -50,7 +100,7 @@ with sync_playwright() as p:
     page.set_viewport_size({"width": 390, "height": 844})
     expect(page.get_by_label("Log de consultas")).to_be_visible()
     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
-    page.screenshot(path=str(ROOT/".test-deps"/"integration-diagnostics-mobile.png"), full_page=True)
+    page.screenshot(path=str(ARTIFACTS/"integration-diagnostics-mobile.png"), full_page=True)
     page.set_viewport_size({"width": 1440, "height": 1000})
     page.get_by_role("row", name="Oficial teste", exact=False).get_by_role("button", name="Configurar envio").click()
     claims = base64.urlsafe_b64encode(json.dumps({
@@ -63,7 +113,7 @@ with sync_playwright() as p:
     page.get_by_label("Liberar envios neste canal").check()
     page.get_by_role("button", name="Salvar canal").click()
     expect(page.get_by_role("cell", name="Pronto para enviar")).to_be_visible()
-    page.screenshot(path=str(ROOT/".test-deps"/"new-integration.png"), full_page=True)
+    page.screenshot(path=str(ARTIFACTS/"new-integration.png"), full_page=True)
     page.get_by_role("button", name="Unidades", exact=False).first.click()
     card.get_by_role("button", name="Acessos", exact=True).click()
     page.get_by_label("Nome", exact=True).fill("Consulta teste")
@@ -76,11 +126,11 @@ with sync_playwright() as p:
     card.get_by_role("link", name="Abrir operação", exact=False).click()
     expect(page.get_by_role("heading", name="Visão geral")).to_be_visible()
     expect(page.get_by_role("navigation", name="Operação")).to_be_visible()
+    accessibility(page, "dashboard")
     expect(page.get_by_role("button", name="Integrações", exact=True)).to_have_count(0)
     page.get_by_role("navigation").get_by_role("button", name="Envios", exact=True).click()
     page.get_by_label("Canal de envio").select_option(label="Oficial teste · Oficial")
-    page.get_by_label("Modelo aprovado").select_option(label="Bem-vindo")
-    page.get_by_label("Valor do campo 1").fill("Equipe")
+    configure_message("Modelo aprovado","Equipe",literal=True)
     page.get_by_label("Telefone com DDI").fill("+5511999990000")
     page.get_by_role("checkbox", name="Confirmo que o destinatário").check()
     page.get_by_role("button", name="Enviar teste", exact=True).click()
@@ -108,6 +158,12 @@ with sync_playwright() as p:
     expect(page.get_by_role("cell",name="45 dias",exact=True)).to_be_visible()
     page.get_by_role("navigation").get_by_role("button",name="Configurações",exact=True).click()
     expect(page.get_by_role("heading",name="Configurações da unidade",exact=True)).to_be_visible()
+    accessibility(page, "settings")
+    page.get_by_label("Canal dos avisos").select_option(label="Oficial teste")
+    configure_message("Modelo de chegada","professional.name")
+    configure_message("Modelo de estoque baixo","product.name")
+    page.get_by_role("button", name="Salvar avisos", exact=False).click()
+    expect(page.get_by_text("Avisos configurados.",exact=True)).to_be_visible()
     page.get_by_label("Atualizar os dados AVEC automaticamente").uncheck()
     page.get_by_label("Dias de histórico para sincronizar").fill("60")
     page.get_by_label("Dias futuros da agenda").fill("14")
@@ -117,7 +173,7 @@ with sync_playwright() as p:
     expect(page.get_by_label("Dias futuros da agenda")).to_have_value("14")
     page.set_viewport_size({"width":390,"height":844})
     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
-    page.screenshot(path=str(ROOT/".test-deps"/"settings-backend-mobile.png"),full_page=True)
+    page.screenshot(path=str(ARTIFACTS/"settings-backend-mobile.png"),full_page=True)
     page.set_viewport_size({"width":1440,"height":1000})
     page.get_by_role("navigation").get_by_role("button",name="Satisfação",exact=True).click()
     expect(page.get_by_text("Aguardando avaliações",exact=True)).to_be_visible()
@@ -133,14 +189,14 @@ with sync_playwright() as p:
     page.get_by_label("Data Início",exact=True).fill("2026-11-01")
     page.get_by_label("Data Fim",exact=True).fill("2026-11-18")
     page.get_by_role("button",name="Consultar relatório",exact=True).click()
+    accessibility(page, "reports")
     page.get_by_label("Selecionar item 1",exact=True).check()
     page.get_by_role("button",name="Preparar envio",exact=True).click()
     page.get_by_label("Canal Oficial",exact=True).select_option(label="Oficial teste")
-    page.get_by_label("Modelo da mensagem",exact=True).select_option(label="Bem-vindo")
-    page.get_by_label("Conteúdo do campo 1",exact=True).select_option("column:valor")
+    configure_message("Modelo da mensagem","column:valor")
     page.get_by_role("button",name="Revisar destinatários e mensagens",exact=True).click()
     expect(page.get_by_text("Olá 125.5",exact=True)).to_be_visible()
-    page.screenshot(path=str(ROOT/".test-deps"/"report-send-review.png"),full_page=True)
+    page.screenshot(path=str(ARTIFACTS/"report-send-review.png"),full_page=True)
     page.get_by_role("checkbox",name="Revisei os números",exact=False).check()
     page.get_by_role("button",name="Confirmar envio de 1 mensagem(ns)",exact=True).click()
     expect(page.get_by_role("heading",name="Relatórios de envios",exact=True)).to_be_visible()
@@ -150,11 +206,16 @@ with sync_playwright() as p:
     expect(page.get_by_label("Intervalo em dias",exact=True)).to_have_value("1")
     page.get_by_role("button",name="Fechar",exact=True).last.click()
     page.get_by_role("navigation").get_by_role("button", name="Automações").click()
+    for routine in ["birthday","inactive","return","cross_sell"]:
+        page.get_by_role("button", name="Nova rotina", exact=False).click()
+        page.get_by_label("Quando executar").select_option(routine)
+        page.get_by_label("Canal Oficial").select_option(label="Oficial teste")
+        configure_message("Modelo aprovado","customer.name")
+        page.get_by_role("button", name="Cancelar", exact=True).click()
     page.get_by_role("button", name="Nova rotina", exact=False).click()
     page.get_by_label("Nome da rotina").fill("Pesquisa de teste")
     page.get_by_label("Canal Oficial").select_option(label="Oficial teste")
-    page.get_by_label("Modelo aprovado").select_option(label="Bem-vindo")
-    page.get_by_label("Informação do campo 1").select_option("customer.name")
+    configure_message("Modelo aprovado","customer.name")
     page.get_by_role("button", name="Salvar rotina").click()
     expect(page.get_by_role("cell", name="Pesquisa de teste")).to_be_visible()
     page.get_by_role("button", name="Simular", exact=True).click()
@@ -165,24 +226,24 @@ with sync_playwright() as p:
     page.get_by_label("Quando executar",exact=True).select_option("csat")
     expect(page.get_by_label("Intervalo em dias",exact=True)).to_have_value("1")
     page.get_by_label("Canal Oficial").select_option(label="Oficial teste")
-    page.get_by_label("Modelo aprovado").select_option(label="Bem-vindo")
-    page.get_by_label("Informação do campo 1").select_option("feedback.url")
+    configure_message("Modelo aprovado","feedback.url")
     page.get_by_role("button",name="Salvar rotina",exact=True).click()
     expect(page.get_by_role("cell",name="CSAT no dia seguinte",exact=True)).to_be_visible()
     page.set_viewport_size({"width": 390, "height": 844})
     page.get_by_role("button", name="Menu", exact=True).click()
     page.get_by_role("navigation").get_by_role("button", name="Visão geral").click()
     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
-    page.screenshot(path=str(ROOT/".test-deps"/"new-mobile.png"), full_page=True)
+    page.screenshot(path=str(ARTIFACTS/"new-mobile.png"), full_page=True)
     page.get_by_role("button", name="Menu", exact=True).click()
     page.get_by_role("button", name="Sair", exact=True).click()
     expect(page.get_by_role("heading", name="Entre no FlowSuite")).to_be_visible()
-    page.screenshot(path=str(ROOT/".test-deps"/"flowsuite-login-blue.png"),full_page=True)
+    page.screenshot(path=str(ARTIFACTS/"flowsuite-login-blue.png"),full_page=True)
     public=browser.new_page(viewport={"width":390,"height":844})
     public.on("pageerror",lambda error:errors.append(str(error)))
-    public.goto((ROOT/".test-deps"/"feedback-browser-url.txt").read_text())
+    public.goto((ARTIFACTS/"feedback-browser-url.txt").read_text())
     expect(public.get_by_role("button",name="Enviar avaliação",exact=True)).to_be_visible()
     assert "Cliente privado de teste" not in public.locator('body').inner_text()
+    accessibility(public, "survey")
     public.locator('input[name="score"][value="5"]').check()
     public.get_by_label("Quer deixar um comentário?",exact=False).fill("Atendimento excelente")
     public.get_by_role("button",name="Enviar avaliação",exact=True).click()
@@ -191,6 +252,8 @@ with sync_playwright() as p:
     public.reload()
     expect(public.get_by_text(re.compile("já foi respondida"))).to_be_visible()
     public.close()
+    assert all(url.startswith(BASE + "/") or url.startswith("data:") for url in requests), requests
     assert not errors, errors
     browser.close()
+    assert not any(audits.values()), audits
 print("PASS navegador real: login, master, catálogo, envio, histórico, retorno, configurações AVEC, estoque, relatórios, CSAT e celular.")

@@ -1,3 +1,4 @@
+import { validContextMapping } from '../public/message-contract.js';
 import { assert, phone, text, uuid } from './security.mjs';
 
 const eq=value=>'eq.'+value;
@@ -52,11 +53,8 @@ export function reportDispatch({db,deliveryConfig}){
     const result=await resolve(unit,user,input);
     const {channel,template}=await deliveryConfig(unit,uuid(input.channel_id),input.template_id);
     assert(channel.type==='waba','Escolha um canal Oficial com modelo aprovado para o envio por relatório.');
-    for(const variable of template.variables){
-      const value=input.mapping?.[variable];
-      assert(typeof value==='string'&&(['customer.name','customer.phone'].includes(value)||value.startsWith('column:')&&result.columns.has(value.slice(7))),
-        'Selecione uma informação para cada campo do modelo.');
-    }
+    assert(validContextMapping('report',template.variables,input.mapping,result.columns),
+      'Selecione uma informação para cada campo do modelo.');
     const rows=result.rows.map(row=>{
       const params=template.variables.map(variable=>{
         const source=input.mapping[variable];

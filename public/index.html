@@ -7,13 +7,14 @@
   <link rel="icon" type="image/webp" href="/logo.webp">
   <meta name="description" content="FlowSuite — relacionamento e automações para sua operação">
   <title>FlowSuite</title>
-  <link rel="stylesheet" href="/style.css">
-  <script type="module" src="/app.js"></script>
+  <link rel="stylesheet" href="/theme.css"><link rel="stylesheet" href="/style.css">
+  <script type="module" src="/bootstrap.js"></script>
 </head>
 <body>
   <div id="app"><main class="loading" role="status">Abrindo o FlowSuite…</main></div>
   <div id="notifications" aria-live="polite"></div>
-  <dialog id="dialog"><div id="dialog-content"></div></dialog>
+  <dialog id="message-picker" aria-labelledby="message-picker-title"></dialog>
+  <dialog id="dialog" aria-labelledby="dialog-title"><div id="dialog-content"></div></dialog>
   <noscript>Ative o JavaScript para usar o FlowSuite.</noscript>
 </body>
 </html>

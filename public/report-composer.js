@@ -1,3 +1,5 @@
+import { mountMessageConfig, readMessageConfig, messageBubble } from './message-picker.js';
+import { messageFields, interpolateMessage } from './message-contract.js';
 export function reportComposer({api,h,select,button,table,openDialog,unitPath,channels,models,onSent,toast}){
   let report=null,selected=new Set(),request=null,review=null;
   const valueLabel=key=>key.replaceAll('_',' ');
@@ -18,12 +20,6 @@ export function reportComposer({api,h,select,button,table,openDialog,unitPath,ch
     });
     const count=document.getElementById('report-selection-count');if(count)count.textContent=selected.size+' itens selecionados';
   }
-  function fields(templateId,mapping={}){
-    const template=models().find(t=>t.id===templateId);
-    return template?`<p class="preview">${h(template.body)}</p>`+template.variables.map(key=>select('Conteúdo do campo '+key,'report-variable-'+key,
-      [['','Selecione uma informação'],['customer.name','Nome do cliente identificado'],['customer.phone','Telefone do cliente identificado'],
-        ...report.columns.map(column=>['column:'+column,'Relatório · '+valueLabel(column)])],mapping[key]||'','required')).join(''):'<p class="hint">Escolha um modelo aprovado para definir seus campos.</p>';
-  }
   function compose(){
     if(!selected.size)throw Error('Selecione os itens do relatório antes de preparar o envio.');
     const available=channels().filter(c=>c.type==='waba');
@@ -37,9 +33,15 @@ export function reportComposer({api,h,select,button,table,openDialog,unitPath,ch
       ${select('Coluna do ID do cliente AVEC','report-id',[['','Identificar pelo telefone'],...report.columns.map(key=>[key,valueLabel(key)])],idColumn)}</div>
       <p class="hint">O ID é procurado nos clientes sincronizados desta unidade. O sistema confere se ID e telefone correspondem. Bloqueios manuais são respeitados.</p>
       ${select('Canal Oficial','report-channel',[['','Selecione'],...available.map(c=>[c.id,c.name])],saved?.channel_id,'required')}
-      ${select('Modelo da mensagem','report-template',[['','Selecione o canal primeiro'],...models().filter(t=>t.channel_id===saved?.channel_id).map(t=>[t.id,t.name])],saved?.template_id,'required')}
-      <div id="report-template-fields" class="stack">${fields(saved?.template_id,saved?.mapping)}</div>
+      <div id="report-message"></div>
       <div class="actions">${button('Cancelar','close-dialog','','ghost')}<button class="btn primary" type="submit">Revisar destinatários e mensagens</button></div></form>`);
+    const form=document.getElementById('report-compose-form');
+    mountMessageConfig(form.querySelector('#report-message'),{label:'Modelo da mensagem',models,context:()=>'report',
+      channel:form.elements['report-channel'],value:{templateId:saved?.template_id,mapping:saved?.mapping||{},params:[]},
+      fields:()=>[...messageFields('report'),...report.columns.map(column=>({
+        key:'column:'+column,label:'Relatório · '+valueLabel(column),example:'['+valueLabel(column)+']'
+      }))]
+    });
   }
   function renderReview(){
     const duplicate=review.rows.length-new Set(review.rows.map(row=>row.phone).filter(Boolean)).size;
@@ -48,7 +50,7 @@ export function reportComposer({api,h,select,button,table,openDialog,unitPath,ch
       ${duplicate>0?'<p class="alert">Há itens com o mesmo destinatário. Cada item selecionado gera uma mensagem; confira se essa repetição é desejada.</p>':''}
       <div class="message-review-list">${review.rows.map(row=>`<article class="review-item"><div class="actions between"><strong>${h(row.name)}</strong>${button('Remover item','report-remove','data-index="'+row.index+'"','small')}</div>
         <p class="hint">${h(row.phone||'Sem telefone')} · Item ${row.index+1}${row.new_contact?' · Novo destinatário':''}</p>
-        ${row.reason?`<p class="alert error">${h(row.reason)}</p>`:`<p class="preview">${h(review.body.replace(/\{\{\s*(\d+)\s*\}\}/g,(_,key)=>row.params[Number(key)-1]||''))}</p>`}</article>`).join('')}</div>
+        ${row.reason?`<p class="alert error">${h(row.reason)}</p>`:messageBubble(interpolateMessage(review.body,key=>row.params[Number(key)-1]))}</article>`).join('')}</div>
       <label class="check"><input type="checkbox" name="confirm" required>Revisei os números, os dados e as mensagens e confirmo a autorização dos destinatários.</label>
       <div class="actions">${button('Voltar à montagem','report-compose','','ghost')}<button class="btn primary" type="submit" ${review.blocked||!review.ready?'disabled':''}>Confirmar envio de ${review.ready} mensagem(ns)</button></div></form>`);
   }
@@ -65,10 +67,10 @@ export function reportComposer({api,h,select,button,table,openDialog,unitPath,ch
   }
   async function submit(form){
     if(form.id==='report-compose-form'){
-      const values=new FormData(form),mapping={};
-      for(const [key,value]of values)if(key.startsWith('report-variable-'))mapping[key.slice(16)]=value;
+      const values=new FormData(form);
+      const {templateId,mapping}=readMessageConfig(form.querySelector('#report-message'));
       request={snapshot_id:report.snapshot_id,rows:[...selected],phone_column:values.get('report-phone'),id_column:values.get('report-id'),
-        channel_id:values.get('report-channel'),template_id:values.get('report-template'),mapping};
+        channel_id:values.get('report-channel'),template_id:templateId,mapping};
       review=await api(unitPath('report-preview'),'POST',request);renderReview();return true;
     }
     if(form.id==='report-review-form'){
@@ -85,11 +87,6 @@ export function reportComposer({api,h,select,button,table,openDialog,unitPath,ch
       if(el.checked&&selected.size>=100){el.checked=false;toast('Selecione até 100 itens por envio.',true);return}
       if(el.checked)selected.add(index);else selected.delete(index);repaintSelection();
     }
-    if(el.id==='report-channel'){
-      const target=el.form.elements['report-template'];target.innerHTML='<option value="">Selecione</option>'+models().filter(t=>t.channel_id===el.value).map(t=>`<option value="${h(t.id)}">${h(t.name)}</option>`).join('');
-      document.getElementById('report-template-fields').innerHTML=fields('');
-    }
-    if(el.id==='report-template')document.getElementById('report-template-fields').innerHTML=fields(el.value);
   });
   return {renderRows,action,submit};
 }

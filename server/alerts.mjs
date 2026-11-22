@@ -1,9 +1,9 @@
+import { validContextMapping } from '../public/message-contract.js';
 import { assert } from './security.mjs';
 import { localDay } from './routines.mjs';
 
 const eq=value=>'eq.'+value;
 const sameInstant=(a,b)=>Number.isFinite(Date.parse(a))&&Date.parse(a)===Date.parse(b);
-const fieldKeys=new Set(['professional.name','customer.name','service.name','appointment.scheduled_at','product.name','product.quantity','product.minimum','establishment.name']);
 const inFlight=new Set(['queued','processing']);
 const accepted=new Set(['accepted','sent','delivered','read']);
 
@@ -21,11 +21,7 @@ export function professionalAlerts({db,deliveryConfig}) {
     const value=settingsFor(settings,kind);
     const delivery=await deliveryConfig(unitId,value.channelId,value.templateId);
     assert(delivery.channel.type==='waba'&&delivery.template,'Os avisos automáticos usam um modelo aprovado de um canal Oficial.');
-    for(const key of delivery.template.variables){
-      assert(fieldKeys.has(value.mapping[key]),'Preencha os campos do modelo de aviso.');
-      if(kind==='arrival')assert(!value.mapping[key].startsWith('product.'),'O aviso de chegada não possui dados de produto.');
-      if(kind==='stock')assert(!['customer.name','service.name','appointment.scheduled_at'].includes(value.mapping[key]),'O aviso de estoque não possui dados de cliente ou serviço.');
-    }
+    assert(validContextMapping(kind,delivery.template.variables,value.mapping),'Preencha os campos do modelo de aviso.');
     return value;
   }
   function professionalMatches(appointment,professionals){
