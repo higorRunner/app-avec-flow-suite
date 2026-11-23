@@ -53,7 +53,7 @@ export async function openWorkspace(user){
 }
 function navigation(){
   if(state.user.master&&!state.unit) return [['home','Unidades','▦']];
-  return [['dashboard','Visão geral','◫'],['send','Envios','↗'],['rules','Automações','↻'],
+  return [['dashboard','Visão geral','◫'],['send','Enviar mensagem','↗'],['rules','Automações','↻'],
     ['contacts','Clientes','♙'],['catalog','Canais e modelos','▤'],['services','Serviços e agenda','◷'],
     ['feedback','Satisfação','☆'],['inventory','Estoque','▧'],['reports','Relatórios','▥'],...(canManage()?[['settings','Configurações','⚙']]:[])];
 }
@@ -233,8 +233,8 @@ function modelTable(channel=''){
     badge(!t.active?'Indisponível':t.supported?'Aprovado':'Formato pendente',t.active&&t.supported?'ok':'warn'),h(t.variables.length)])):empty('Nenhum modelo neste filtro','Confira o canal e a sincronização.');
 }
 function sendPage(){
-  if(!canSend()) return head('Envios','Seu perfil permite consultar os resultados.')+jobTable(state.data.jobs);
-  if(!readyChannels().length)return head('Envios','Prepare um canal para começar.')+empty('Nenhum canal pronto','O administrador pode configurar as credenciais na integração da unidade.');
+  if(!canSend()) return head('Enviar mensagem','Seu perfil permite consultar os resultados.')+jobTable(state.data.jobs);
+  if(!readyChannels().length)return head('Enviar mensagem','Prepare um canal para começar.')+empty('Nenhum canal pronto','O administrador pode configurar as credenciais na integração da unidade.');
   const test=state.sendMode==='test';
   return `${head('Nova mensagem','Escolha o canal, revise o conteúdo e confirme o destinatário.')}
    <div class="tabs" role="group" aria-label="Tipo de envio">${[['test','Envio de teste'],['manual','Enviar para clientes']].map(([id,label])=>
