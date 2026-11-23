@@ -9,7 +9,7 @@ function renderLogin(message=''){
     <small>Central de relacionamento</small>
    </aside>
    <section class="auth-form"><div class="auth-card stack"><div class="mobile-brand">${brandLogo}</div><div><h1>Entre no FlowSuite</h1><p class="muted">Acesse com a conta criada para sua equipe.</p></div>
-    ${message?`<p class="alert" role="status">${h(message)}</p>`:''}
+    <p class="alert" id="login-notice" role="status" ${message?'':'hidden'}>${h(message)}</p>
     <form id="login-form" class="stack">
      ${input('E-mail','email','email','','required autocomplete="username" maxlength="160"')}
      ${input('Senha','password','password','','required autocomplete="current-password" maxlength="200"')}
@@ -23,14 +23,18 @@ async function start(){
   try {
     user=await api('/me');
   } catch {
-    let message=sessionStorage.getItem('flowsuite-notice')||'';
+    const message=sessionStorage.getItem('flowsuite-notice')||'';
     sessionStorage.removeItem('flowsuite-notice');
-    try {
-      const health=await (await fetch('/health')).json();
-      if(!health.ok)message=health.message;
-    } catch {message='Não foi possível conectar ao servidor.'}
     renderLogin(message);
     const form=document.getElementById('login-form');
+    const notice=document.getElementById('login-notice');
+    const showHealth=message=>{
+      notice.textContent=message;
+      notice.hidden=false;
+    };
+    fetch('/health').then(response=>response.json()).then(health=>{
+      if(!health.ok)showHealth(health.message);
+    }).catch(()=>showHealth('Não foi possível conectar ao servidor.'));
     form.addEventListener('submit',async event=>{
       event.preventDefault();
       const submit=form.querySelector('button');

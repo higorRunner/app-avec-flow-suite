@@ -957,7 +957,7 @@ body{background:radial-gradient(ellipse at 88% 0,#16375b66,transparent 48%),#0b1
 .nav-link.active,.operation-mode .nav-link.active{background:linear-gradient(100deg,#1a4882,#173557);color:#e0f8ff;border-color:#2e6da1;box-shadow:inset 3px 0 #42d2f7}
 .topbar{background:#0e1c36e8;backdrop-filter:blur(16px);position:sticky;top:0;z-index:5}
 .content{padding-top:32px}
-.card{background:linear-gradient(130deg,#172a49,#12213c);border-radius:var(--card-radius);box-shadow:0 14px 38px #03091b24;transition:border-color .2s,box-shadow .2s;animation:reveal .3s ease both}
+.card{background:linear-gradient(130deg,#172a49,#12213c);border-radius:var(--card-radius);box-shadow:0 14px 38px #03091b24;transition:border-color .2s,box-shadow .2s;animation:card-enter .2s ease-out}
 .card:hover{border-color:#3b577e}
 .card h2,.auth-card h1{color:#f0f6ff}
 .btn{background:#1b3153;border-color:#355079;color:#e5f0ff;border-radius:11px;font-size:.9rem;transition:transform .15s,background .15s,box-shadow .15s,border-color .15s}
@@ -1014,6 +1014,7 @@ dialog::backdrop{background:#030a1bd9;backdrop-filter:blur(7px)}
 .message-review-list{display:grid;gap:14px;max-height:46dvh;overflow:auto;padding:2px;scrollbar-width:thin}
 .review-item{border:1px solid #345273;border-radius:15px;padding:16px;display:grid;gap:12px}
 @keyframes reveal{from{opacity:.3;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+@keyframes card-enter{from{transform:translateY(4px)}to{transform:none}}
 @media(max-width:780px){.auth-card{padding:26px}.mobile-brand{display:block;margin-bottom:5px}.topbar{backdrop-filter:none}.sidebar .brand-logo{width:210px}.selection-toolbar .actions{width:100%}.selection-toolbar .primary{flex:1}.rating-demo{gap:7px}.rating-demo span{min-width:43px;padding:7px}.content{padding-top:24px}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
 .simulation-list{display:grid;gap:.5rem;max-height:min(46vh,28rem);overflow:auto;padding:.25rem}
@@ -1041,9 +1042,17 @@ dialog::backdrop{background:#030a1bd9;backdrop-filter:blur(7px)}
   background:var(--surface);
 }
 .message-config p { overflow-wrap:anywhere; }
+.message-config > div { flex:1 1 14rem; min-width:0; }
 .message-config strong { font-size:.9375rem; }
+.message-config-status:empty { margin:0; }
+.btn[aria-disabled="true"] { cursor:wait; }
 #message-picker { width:min(52rem,calc(100% - 1.5rem)); }
+#confirmation { width:min(30rem,calc(100% - 1.5rem)); }
 #message-picker .dialog-head { margin-bottom:0; align-items:center; }
+dialog { scroll-padding-block:5rem 1rem; }
+.skip-link { position:fixed; z-index:20; inset:1rem auto auto 1rem; padding:.75rem 1rem; background:var(--surface); color:var(--ink); border-radius:var(--field-radius); clip-path:inset(50%); }
+.skip-link:focus { clip-path:none; }
+#main { scroll-margin-top:5rem; }
 .message-picker-grid {
   display:grid;
   grid-template-columns:minmax(0,1fr) minmax(0,1fr);
@@ -1092,6 +1101,8 @@ dialog::backdrop{background:#030a1bd9;backdrop-filter:blur(7px)}
   .message-picker-grid { grid-template-columns:minmax(0,1fr); }
   #message-picker { padding:1rem; max-height:94dvh; }
   #message-picker .dialog-head { top:-1rem; }
+  .message-config > button { width:100%; min-height:44px; }
+  .dialog-footer > .btn { min-height:44px; }
 }
 
 .delivery-states { display:grid; gap:.5rem; }

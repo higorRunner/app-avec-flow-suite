@@ -1,15 +1,13 @@
-import { h, input, select } from './ui.js';
+import { h, input, select, messageBubble } from './ui.js';
 import { interpolateMessage, maxParameterLength } from './message-contract.js';
-import { messageBubble } from './message-picker.js';
 const picker = document.getElementById('message-picker');
 const normalize = text => text.normalize('NFD').replace(/\p{Diacritic}/gu,'').toLocaleLowerCase('pt-BR').trim();
 const control = (label,kind,style='') =>
   `<button type="button" class="btn ${style}" data-picker="${kind}">${h(label)}</button>`;
 
-export function openPicker(host,config,{saved,validate,paint}) {
+export function openPicker(host,config,{saved,fields,validate,paint}) {
   const models = config.models(config.channel.value);
   if (!models.length || picker.open) return;
-  const fields = config.fields?.() || [];
   const drafts = new Map();
   if (saved) drafts.set(saved.id,config.value);
   let current = saved;
@@ -47,6 +45,16 @@ export function openPicker(host,config,{saved,validate,paint}) {
   const bubble = picker.querySelector('#message-bubble');
   const error = picker.querySelector('#message-error');
   const confirm = form.querySelector('[type="submit"]');
+  function close() {
+    picker.inert = true;
+    picker.close();
+    host.querySelector('button')?.focus();
+    picker.setAttribute('aria-hidden','true');
+  }
+  picker.oncancel = event => {
+    event.preventDefault();
+    close();
+  };
 
   function value() {
     const entries = current.variables.map((key,index) => [key,variables.querySelector('#message-field-'+index).value.trim()]);
@@ -97,7 +105,7 @@ export function openPicker(host,config,{saved,validate,paint}) {
   form.addEventListener('click',event => {
     const action = event.target.closest('[data-picker]')?.dataset.picker;
     if (action === 'remove') {config.value = null;paint(host,config)}
-    if (action === 'remove' || action === 'cancel') picker.close();
+    if (action === 'remove' || action === 'cancel') close();
   });
   form.addEventListener('submit',event => {
     event.preventDefault();
@@ -108,13 +116,16 @@ export function openPicker(host,config,{saved,validate,paint}) {
     if (message) {error.textContent = message;error.hidden = false;return}
     config.value = next;
     paint(host,config);
-    picker.close();
+    close();
   });
-  picker.addEventListener('close',() => {
-    host.querySelector('button')?.focus();
-    picker.replaceChildren();
+  picker.addEventListener('close',async () => {
+    if (picker.open || picker.firstElementChild!==form) return;
+    await Promise.allSettled(picker.getAnimations().map(animation=>animation.finished));
+    if (!picker.open && picker.firstElementChild===form) picker.replaceChildren();
   },{once:true});
   filter();
   renderVariables();
+  picker.inert = false;
+  picker.removeAttribute('aria-hidden');
   picker.showModal();
 }

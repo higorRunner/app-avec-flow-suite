@@ -27,6 +27,7 @@ test('job polling returns display columns only and checks unit membership',async
     await f.db.insert('fs_memberships',{unit_id:units[0].id,user_id:viewer.id,role:'viewer'});
     for(const unit of units){
       const [channel]=await f.db.insert('fs_channels',{unit_id:unit.id,name:'Local',type:'whatsapp',external_id:'1'});
+      await f.db.insert('fs_contacts',{unit_id:unit.id,name:unit.slug,phone:'+5511999990000',email:'contato@example.test'});
       await f.db.insert('fs_jobs',{unit_id:unit.id,channel_id:channel.id,kind:'test',phone:'+5511999990000',
         status:'accepted',idempotency_key:unit.slug,payload:{body:'privado'},external_id:unit.slug});
     }
@@ -34,5 +35,13 @@ test('job polling returns display columns only and checks unit membership',async
     assert.deepEqual(jobs.map(job=>job.external_id),['local-a']);
     assert.deepEqual(Object.keys(jobs[0]).sort(),['id','created_at','kind','phone','status','error','external_id'].sort());
     await assert.rejects(f.app.route(viewer,'GET','/units/'+units[1].id+'/jobs',{}),{status:403});
+    const operation=await f.app.route(viewer,'GET','/units/'+units[0].id+'/data',{});
+    assert.equal(operation.channels.length,1);
+    assert.equal(Object.hasOwn(operation.channels[0],'external_id'),false);
+    assert.equal(Object.hasOwn(operation,'professionals'),false);
+    assert.deepEqual(operation.contacts.map(({id,...contact})=>contact),[{name:'local-a'}]);
+    await assert.rejects(f.app.route(viewer,'GET','/units/'+units[0].id+'/settings',{}),{status:403});
+    await assert.rejects(f.app.route(viewer,'GET','/units/'+units[1].id+'/data',{}),{status:403});
+    await assert.rejects(f.app.route(viewer,'POST','/units/'+units[0].id+'/send',{}),{status:403});
   } finally {await f.pg.close()}
 });

@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#0b1530">
   <link rel="icon" type="image/webp" href="/logo.webp">
+  <link rel="preload" as="image" href="/logo.webp">
   <meta name="description" content="FlowSuite — relacionamento e automações para sua operação">
   <title>FlowSuite</title>
   <link rel="stylesheet" href="/theme.css"><link rel="stylesheet" href="/style.css">
@@ -13,8 +14,18 @@
 <body>
   <div id="app"><main class="loading" role="status">Abrindo o FlowSuite…</main></div>
   <div id="notifications" aria-live="polite"></div>
-  <dialog id="message-picker" aria-labelledby="message-picker-title"></dialog>
+  <dialog id="message-picker" aria-labelledby="message-picker-title" aria-hidden="true"></dialog>
   <dialog id="dialog" aria-labelledby="dialog-title"><div id="dialog-content"></div></dialog>
+  <dialog id="confirmation" aria-labelledby="confirmation-title" aria-describedby="confirmation-detail">
+    <form method="dialog" class="stack">
+      <h2 id="confirmation-title"></h2>
+      <p id="confirmation-detail"></p>
+      <div class="actions dialog-footer">
+        <button type="submit" value="cancel" class="btn ghost" autofocus>Cancelar</button>
+        <button type="submit" value="confirm" class="btn primary"></button>
+      </div>
+    </form>
+  </dialog>
   <noscript>Ative o JavaScript para usar o FlowSuite.</noscript>
 </body>
 </html>

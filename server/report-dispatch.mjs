@@ -1,4 +1,4 @@
-import { validContextMapping } from '../public/message-contract.js';
+import { validContextMapping, validParameters } from '../public/message-contract.js';
 import { assert, phone, text, uuid } from './security.mjs';
 
 const eq=value=>'eq.'+value;
@@ -61,7 +61,7 @@ export function reportDispatch({db,deliveryConfig}){
         return source==='customer.name'?row.name:source==='customer.phone'?row.phone||'':
           scalar(Object.hasOwn(row.row,source.slice(7))?row.row[source.slice(7)]:null);
       });
-      const invalid=params.some(value=>!value||value.length>1024);
+      const invalid=!validParameters(template.variables,params);
       return {...row,params,reason:row.reason||(invalid?'Há um campo do modelo vazio, composto ou com mais de 1.024 caracteres.':'')};
     });
     return {...result,channel,template,rows};

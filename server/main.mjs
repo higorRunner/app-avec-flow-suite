@@ -13,6 +13,7 @@ const files = new Map([
   ['/app.js',['app.js','text/javascript; charset=utf-8']],
   ['/ui.js',['ui.js','text/javascript; charset=utf-8']],
   ['/message-contract.js',['message-contract.js','text/javascript; charset=utf-8']],
+  ['/automation-contract.js',['automation-contract.js','text/javascript; charset=utf-8']],
   ['/message-dialog.js',['message-dialog.js','text/javascript; charset=utf-8']],
   ['/message-picker.js',['message-picker.js','text/javascript; charset=utf-8']],
   ['/report-composer.js',['report-composer.js','text/javascript; charset=utf-8']],

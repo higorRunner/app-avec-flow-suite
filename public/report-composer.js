@@ -1,5 +1,6 @@
-import { mountMessageConfig, readMessageConfig, messageBubble } from './message-picker.js';
-import { messageFields, interpolateMessage } from './message-contract.js';
+import { mountMessageConfig, readMessageConfig } from './message-picker.js';
+import { messageBubble } from './ui.js';
+import { interpolateMessage } from './message-contract.js';
 export function reportComposer({api,h,select,button,table,openDialog,unitPath,channels,models,onSent,toast}){
   let report=null,selected=new Set(),request=null,review=null;
   const valueLabel=key=>key.replaceAll('_',' ');
@@ -38,9 +39,7 @@ export function reportComposer({api,h,select,button,table,openDialog,unitPath,ch
     const form=document.getElementById('report-compose-form');
     mountMessageConfig(form.querySelector('#report-message'),{label:'Modelo da mensagem',models,context:()=>'report',
       channel:form.elements['report-channel'],value:{templateId:saved?.template_id,mapping:saved?.mapping||{},params:[]},
-      fields:()=>[...messageFields('report'),...report.columns.map(column=>({
-        key:'column:'+column,label:'Relatório · '+valueLabel(column),example:'['+valueLabel(column)+']'
-      }))]
+      reportColumns:report.columns,
     });
   }
   function renderReview(){

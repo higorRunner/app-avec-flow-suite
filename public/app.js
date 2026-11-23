@@ -1,7 +1,7 @@
 import { api, brandLogo, toast } from './client.js';
-import { h, button, input, options, select, textarea, empty, table, head, metric } from './ui.js';
-import { mountMessageConfig, readMessageConfig } from './message-picker.js';
-import { messageFields } from './message-contract.js';
+import { h, button, input, options, select, textarea, empty, table, head, metric, messageBubble, paginate, confirmAction } from './ui.js';
+import { mountMessageConfig, readMessageConfig, refreshMessageConfig } from './message-picker.js';
+import { appointmentStatusLabels, defaultAppointmentStatuses, routines, routineMessageContext } from './automation-contract.js';
 import { reportComposer } from './report-composer.js';
 const root=document.getElementById('app');
 const dialog=document.getElementById('dialog');
@@ -9,10 +9,8 @@ const state={user:null,units:[],unit:null,data:null,integration:null,members:[],
   contacts:[],contactPage:0,contactSearch:'',selected:new Set(),sendMode:'test',channel:'',settings:null,avecReport:null,reportCode:'',reportPage:1,jobStatus:'',jobPeriod:0};
 const labels={queued:'Na fila',processing:'Resultado inconclusivo',accepted:'Aceita pelo Clickmassa',sent:'Enviada',delivered:'Entregue',
   read:'Lida',failed:'Falha',skipped:'Ignorada',pending:'Solicitado',syncing:'Conectando',ready:'Atualizado',error:'Falha',unconfigured:'Pendente'};
-const types={post_service:'Pós-atendimento',csat:'Pesquisa de satisfação',return:'Sugestão de retorno',
-  birthday:'Aniversário',inactive:'Clientes inativos',cross_sell:'Venda complementar'};
-const appointmentStatusChoices=[['scheduled','Agendado'],['confirmed','Confirmado'],['waiting','Aguardando'],
-  ['in_progress','Em atendimento'],['finalized','Finalizado'],['paid','Pago'],['canceled','Cancelado'],['missed','Faltou']];
+const typeChoices=Object.entries(routines).map(([key,routine])=>[key,routine.label]);
+const appointmentStatusChoices=Object.entries(appointmentStatusLabels);
 let dateFormatter;
 let formatterZone;
 function fmt(value){
@@ -61,7 +59,7 @@ function navigation(){
 }
 function render(){
   const master=state.user.master&&!state.unit;
-  root.innerHTML=`<div class="layout ${master?'master-mode':'operation-mode'}">
+  root.innerHTML=`<a class="skip-link" href="#main">Pular para o conteúdo</a><div class="layout ${master?'master-mode':'operation-mode'}">
    <button class="scrim" data-action="menu" aria-label="Fechar menu" ${state.menu?'':'hidden'}></button>
    <aside class="sidebar ${state.menu?'open':''}" id="sidebar">
     <div class="brand">${brandLogo}</div>
@@ -77,7 +75,7 @@ function render(){
    <div><header class="topbar"><div class="actions">${button('☰','menu','aria-label="Menu" aria-controls="sidebar" aria-expanded="'+state.menu+'"','menu-toggle small')}
     <strong>${master?'Painel master':h(state.unit?.name||'Acesso da equipe')}</strong></div>
     <span class="hint"><span class="status-dot"></span>Servidor integrado</span></header>
-    <main class="content" id="main">${content()}</main>
+    <main class="content" id="main" tabindex="-1">${content()}</main>
    </div></div>`;
   hydrate();
 }
@@ -259,7 +257,8 @@ function sendContent(){
   const channel=state.data.channels.find(c=>c.id===state.channel);
   if(!channel)return '<p class="hint">Selecione o canal.</p>';
   if(channel.type==='whatsapp')return textarea('Mensagem','send-body','','required maxlength="4096"')+
-    textarea('Nota interna (opcional)','send-note','','maxlength="1000"')+'<p class="hint">A nota fica visível para a equipe de atendimento.</p>';
+    textarea('Nota interna (opcional)','send-note','','maxlength="1000"')+'<p class="hint">A nota fica visível para a equipe de atendimento.</p>'+
+    '<section class="message-picker-preview" id="send-preview" aria-label="Prévia da conversa" hidden></section>';
   return '<div id="send-message"></div>';
 }
 function jobTable(jobs){
@@ -292,7 +291,7 @@ function contactTable(){
     h(c.name),h(c.phone||'Telefone não informado'),badge(c.send_blocked?'Bloqueado':c.consent?'Disponível':'Sem telefone válido',c.send_blocked?'error':c.consent?'ok':'warn'),
     `<div class="actions">${button('Histórico','contact-history','data-id="'+c.id+'"','small')}${canSend()?button('Editar','edit-contact','data-id="'+c.id+'"','small'):''}</div>`,
   ])):empty('Nenhum cliente encontrado','Cadastre um cliente ou peça ao administrador a importação AVEC.')}
-   <div class="pager">${button('Anterior','contacts-prev',state.contactPage?'':'disabled','small')}<small>Página ${state.contactPage+1}</small>${button('Próxima','contacts-next',state.contacts.length>25?'':'disabled','small')}</div>`;
+   ${paginate({page:state.contactPage+1,hasMore:state.contacts.length>25,previous:'contacts-prev',next:'contacts-next'})}`;
 }
 function servicesPage(){
   const d=state.data;
@@ -390,10 +389,10 @@ function reportParameters(){
 function reportResult(){
   const report=state.avecReport;
   if(!report)return '';
-  const columns=report.columns||Object.keys(report.rows?.[0]||{}),rows=report.rows||[];
-  return `<div class="stack"><p class="hint">Página ${state.reportPage} · ${rows.length} linha(s) nesta página.</p>
+  const rows=report.rows||[];
+  return `<div class="stack"><p class="hint">${rows.length} linha(s) nesta página.</p>
     ${rows.length?composer.renderRows({...report,code:state.reportCode}):empty('Nenhum resultado neste filtro','Confira o período e os filtros informados.')}
-   <div class="pager">${button('Página anterior','report-prev',state.reportPage>1?'':'disabled','small')}${button('Próxima página','report-next',report.has_more?'':'disabled','small')}</div></div>`;
+   ${paginate({page:state.reportPage,hasMore:report.has_more,previous:'report-prev',next:'report-next'})}</div>`;
 }
 async function queryReport(form,page=1){
   const values=new FormData(form),params={page,limit:250};
@@ -402,14 +401,19 @@ async function queryReport(form,page=1){
     const input=form.elements.namedItem(key);
     params[key.slice(13)]=input.type==='date'?value.split('-').reverse().join('/'):value;
   }
-  state.avecReport=await api(unitPath('avec-report'),'POST',{code:values.get('report-code'),params});
+  const code=values.get('report-code');
+  const request=Symbol();
+  form.reportRequest=request;
+  const report=await api(unitPath('avec-report'),'POST',{code,params});
+  if(!form.isConnected||form.reportRequest!==request||state.reportCode!==code)return;
+  state.avecReport=report;
   state.reportPage=page;
   document.getElementById('avec-report-result').innerHTML=reportResult();
 }
 function rulesPage(){
   return `${head('Automações','Regras avaliadas a cada minuto, com horário e consentimento da unidade.',canManage()?button('＋ Nova rotina','new-rule','','primary'):'')}
    <section class="card stack">${state.data.rules.length?table(['Regra','Gatilho','Horário','Estado','Ações'],state.data.rules.map(r=>[
-    h(r.name),h(types[r.type]),h(r.send_time.slice(0,5)),badge(r.enabled?'Ativa':'Pausada',r.enabled?'ok':''),
+    h(r.name),h(routines[r.type]?.label),h(r.send_time.slice(0,5)),badge(r.enabled?'Ativa':'Pausada',r.enabled?'ok':''),
     canManage()?`<div class="actions">${button('Editar','edit-rule','data-id="'+r.id+'"','small')}${button('Simular','simulate','data-id="'+r.id+'"','small')}${r.enabled?button('Pausar','pause-rule','data-id="'+r.id+'"','small'):''}</div>`:'—',
    ])):empty('Nenhuma rotina criada','Comece com uma regra de pós-atendimento e teste sua elegibilidade.')}</section>`;
 }
@@ -424,7 +428,7 @@ function mountAlerts(){
   const alerts=state.settings.alerts||{};
   for(const [kind,label] of [['arrival','Modelo de chegada'],['stock','Modelo de estoque baixo']]){
     mountMessageConfig(form.querySelector('#'+kind+'-message'),{
-      label,channel:form.elements['alert-channel'],models:readyModels,optional:true,context:()=>kind,fields:()=>messageFields(kind),
+      label,channel:form.elements['alert-channel'],models:readyModels,optional:true,context:()=>kind,
       value:{templateId:alerts[kind+'_template_id'],mapping:alerts[kind+'_mapping']||{},params:[]}
     });
   }
@@ -492,10 +496,10 @@ async function membersDialog(){
 }
 function ruleDialog(rule={}){
   const channels=readyChannels().filter(c=>c.type==='waba');
-  const selectedStatuses=Array.isArray(rule.appointment_statuses)?rule.appointment_statuses:['finalized','paid'];
+  const selectedStatuses=Array.isArray(rule.appointment_statuses)?rule.appointment_statuses:defaultAppointmentStatuses;
   openDialog(rule.id?'Editar rotina':'Nova rotina',`<form id="rule-form" class="stack" data-id="${h(rule.id||'')}">
    ${input('Nome da rotina','name','text',rule.name,'required maxlength="120"')}
-   ${select('Quando executar','type',Object.entries(types),rule.type||'post_service','required')}
+   ${select('Quando executar','type',typeChoices,rule.type||'post_service','required aria-describedby="rule-help"')}
    <p class="hint" id="rule-help"></p>
    <div class="form-grid">${input('Intervalo em dias','delay_days','number',rule.delay_days??(rule.type==='csat'?1:0),'required min="0" max="3650"')}
     ${input('Horário da unidade','send_time','time',(rule.send_time||'09:00').slice(0,5),'required')}</div>
@@ -514,8 +518,7 @@ function ruleDialog(rule={}){
   const form=document.getElementById('rule-form');
   mountMessageConfig(form.querySelector('#rule-message'),{
     label:'Modelo aprovado', channel:form.elements['rule-channel'], models:readyModels,
-    fields:()=>messageFields(form.elements.type.value==='csat'?'csat':'rule'),
-    context:()=>form.elements.type.value==='csat'?'csat':'rule',
+    context:()=>routineMessageContext(form.elements.type.value),
     value:{templateId:rule.template_id,mapping:rule.mapping||{},params:[]}
   });
   updateRuleType();
@@ -523,21 +526,17 @@ function ruleDialog(rule={}){
 function updateRuleType(){
   const form=document.getElementById('rule-form');
   if(!form)return;
-  const type=form.elements.type.value;
-  const help={post_service:'Mensagem após a conclusão confirmada do atendimento no AVEC.',csat:'Use 1 dia para enviar no dia seguinte. Inclua o Link individual da pesquisa de satisfação em um campo do modelo para receber as avaliações no painel.',
-    return:'Usa o prazo de retorno do serviço. O intervalo desta regra serve como alternativa.',
-    birthday:'Zero dias envia na data de aniversário. Nascidos em 29/02 recebem no próprio dia em anos bissextos.',
-    inactive:'Conta os dias desde o último serviço concluído e verifica se há agendamento futuro.',
-    cross_sell:'Oferece um serviço complementar após o atendimento concluído.'};
-  form.querySelector('#rule-help').textContent=help[type];
+  const routine=routines[form.elements.type.value];
+  form.querySelector('#rule-help').textContent=routine.description;
   const target=form.querySelector('#target-service');
-  target.hidden=type!=='cross_sell';
-  target.querySelector('select').required=type==='cross_sell';
-  target.querySelector('select').disabled=type!=='cross_sell';
-  form.elements.service_id.disabled=type==='birthday';
+  target.hidden=!routine.recommendedService;
+  target.querySelector('select').required=routine.recommendedService;
+  target.querySelector('select').disabled=!routine.recommendedService;
+  form.elements.service_id.disabled=!routine.statusFilter;
   const statuses=form.querySelector('#rule-statuses');
-  statuses.hidden=type==='birthday';
-  statuses.querySelectorAll('input').forEach(input=>input.disabled=type==='birthday');
+  statuses.hidden=!routine.statusFilter;
+  statuses.querySelectorAll('input').forEach(input=>input.disabled=!routine.statusFilter);
+  refreshMessageConfig(form.querySelector('#rule-message'));
 }
 async function action(name,btn){
   if(await composer.action(name,btn))return;
@@ -565,7 +564,10 @@ async function action(name,btn){
       await navigator.clipboard.writeText(unitLink(state.units.find(u=>u.id===id)));toast('Link copiado.');return;
     case 'unit-active': {
       const unit=state.units.find(u=>u.id===id);
-      if(!confirm((unit.active?'Desativar ':'Ativar ')+unit.name+'?'))return;
+      const verb=unit.active?'Desativar':'Ativar';
+      if(!await confirmAction(verb+' unidade',unit.active?
+        'A unidade '+unit.name+' ficará indisponível para a equipe e para os envios.':
+        'A unidade '+unit.name+' ficará disponível para a equipe.',verb))return;
       await api('/units/'+id+'/active','POST',{active:!unit.active});
       state.units=await api('/units');render();return;
     }
@@ -600,7 +602,7 @@ async function action(name,btn){
     case 'members':
       state.adminUnit=state.units.find(u=>u.id===id);await membersDialog();return;
     case 'remove-member':
-      if(!confirm('Remover o acesso desta pessoa à unidade?'))return;
+      if(!await confirmAction('Remover acesso','Esta pessoa perderá o acesso a esta unidade.','Remover acesso'))return;
       await api('/units/'+state.adminUnit.id+'/members/'+id,'DELETE',{});
       dialog.close();await membersDialog();return;
     case 'reset-member':
@@ -697,7 +699,7 @@ async function action(name,btn){
     case 'simulation-send': {
       const contacts=[...dialog.querySelectorAll('[data-simulation-contact]:checked')].map(el=>el.value);
       if(!contacts.length)throw Error('Selecione pelo menos um cliente.');
-      if(!confirm(`Enviar agora para ${contacts.length} cliente(s) selecionado(s)?`))return;
+      if(!await confirmAction('Enviar mensagens',`O envio será adicionado à fila para ${contacts.length} cliente(s) selecionado(s).`,'Adicionar à fila'))return;
       const result=await api(unitPath('simulate-send'),'POST',{rule_id:id,contacts,confirm:true});
       dialog.close();
       toast(result.queued?`${result.queued} mensagem(ns) adicionada(s) à fila.`:'Estes eventos já estavam registrados.');
@@ -791,23 +793,46 @@ async function submit(form){
 }
 function randomUUID(){return crypto.randomUUID()}
 
+let navigationRequest;
 root.addEventListener('click',async e=>{
   const page=e.target.closest('[data-page]');
   const mode=e.target.closest('[data-mode]');
   try{
     if(page){
-      state.page=page.dataset.page;state.menu=false;
-      if(state.page==='settings')state.settings=await api(unitPath('settings'));
-      if(state.unit)await refreshData();render();
+      const destination=page.dataset.page;
+      const request=Symbol();
+      navigationRequest=request;
+      if(state.unit){
+        const [data,settings]=await Promise.all([
+          api(unitPath('data')),
+          destination==='settings'?api(unitPath('settings')):null,
+        ]);
+        if(navigationRequest!==request)return;
+        state.data=data;
+        if(settings)state.settings=settings;
+      }
+      state.page=destination;state.menu=false;render();
       const heading=document.querySelector('#main h1');if(heading){heading.tabIndex=-1;heading.focus({preventScroll:true})}
       return;
     }
     if(mode){state.sendMode=mode.dataset.mode;render();return}
     const btn=e.target.closest('[data-action]');
-    if(!btn||btn.disabled)return;
-    btn.disabled=true;
-    try{await action(btn.dataset.action,btn)}finally{if(btn.isConnected)btn.disabled=false}
+    if(!btn||btn.disabled||btn.getAttribute('aria-disabled')==='true')return;
+    navigationRequest=null;
+    btn.setAttribute('aria-disabled','true');
+    try{await action(btn.dataset.action,btn)}finally{
+      if(btn.isConnected){
+        btn.removeAttribute('aria-disabled');
+        if(document.activeElement===document.body)btn.focus();
+      }
+    }
   }catch(error){toast(error.message,true)}
+});
+document.addEventListener('keydown',event=>{
+  if(event.key!=='Escape'||!state.menu||document.querySelector('dialog[open]'))return;
+  const toggle=document.querySelector('.menu-toggle');
+  toggle?.click();
+  toggle?.focus();
 });
 dialog.addEventListener('click',async e=>{
   const btn=e.target.closest('[data-action]');
@@ -815,8 +840,9 @@ dialog.addEventListener('click',async e=>{
   try{await action(btn.dataset.action,btn)}catch(error){toast(error.message,true)}
 });
 document.addEventListener('submit',async e=>{
-  e.preventDefault();
   const form=e.target;
+  if(form.method==='dialog')return;
+  e.preventDefault();
   if(form.dataset.busy)return;
   const btn=form.querySelector('button[type="submit"]');
   if(!btn)return;
@@ -846,7 +872,7 @@ document.addEventListener('change',e=>{
     document.getElementById('send-content').innerHTML=sendContent();
     const host=document.getElementById('send-message');
     if(host)mountMessageConfig(host,{label:'Modelo aprovado',channel:el,models:readyModels,
-      literal:state.sendMode==='test',context:()=>'manual',fields:()=>messageFields('manual'),replacedOnChannelChange:true});
+      literal:state.sendMode==='test',context:()=>'manual',replacedOnChannelChange:true});
   }
   if(el.hasAttribute('data-contact')){
     if(el.checked&&state.selected.size>=100){el.checked=false;toast('Selecione até 100 contatos.',true);return}
@@ -858,6 +884,7 @@ document.addEventListener('change',e=>{
     updateRuleType();
   }
   if(el.id==='report-code'){
+    form.reportRequest=null;
     state.reportCode=el.value;state.avecReport=null;state.reportPage=1;
     document.getElementById('report-parameters').innerHTML=reportParameters();
     document.getElementById('avec-report-result').innerHTML='';
@@ -867,6 +894,11 @@ let searchTimer;
 let appointmentSearchTimer;
 document.addEventListener('input',e=>{
   const el=e.target;
+  if(el.id==='send-body'){
+    const preview=document.getElementById('send-preview');
+    preview.hidden=!el.value.trim();
+    preview.innerHTML=preview.hidden?'':messageBubble(el.value);
+  }
   if(el.id==='contact-search'||el.id==='send-search'){
     const send=el.id==='send-search';
     state.contactPage=0;state.contactSearch=el.value;

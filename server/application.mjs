@@ -1,4 +1,5 @@
 import { validContextMapping, validParameters } from '../public/message-contract.js';
+import { appointmentStatuses, routines, ruleTypes, routineMessageContext } from '../public/automation-contract.js';
 import { randomUUID } from 'node:crypto';
 import { assert, AppError, text, phone, uuid, passwordHash } from './security.mjs';
 import { readCatalog, senderEndpoint, messagePayload, sendMessage, ProviderError } from './providers/clickmassa.mjs';
@@ -7,7 +8,7 @@ import { fetchReportAll, fetchReportPage, AvecError, avecBirthday } from './prov
 import { syncAvecData, avecConfig } from './avec-sync.mjs';
 import reportCatalog from './providers/avec-catalog.json' with {type:'json'};
 import { professionalAlerts } from './alerts.mjs';
-import { candidates, ruleTypes, appointmentStatuses } from './routines.mjs';
+import { candidates } from './routines.mjs';
 import { reportDispatch } from './report-dispatch.mjs';
 
 const eq = value => 'eq.' + value;
@@ -59,23 +60,20 @@ export function application({ db, secrets, catalog = readCatalog, send = sendMes
   }
   async function unitData(unit) {
     const id=unit.id;
-    const [channels,templates,contacts,services,appointments,rules,jobs,events]=await Promise.all([
-      db.select('fs_channels',{unit_id:eq(id),order:'name'}),
-      db.select('fs_templates',{unit_id:eq(id),order:'name'}),
-      db.select('fs_contacts',{unit_id:eq(id),order:'name',limit:100}),
+    const [channels,templates,contacts,services,appointments,rules,jobs,events,stock,feedback]=await Promise.all([
+      db.select('fs_channels',{unit_id:eq(id),select:'id,name,type,active,enabled,configured',order:'name'}),
+      db.select('fs_templates',{unit_id:eq(id),select:'id,channel_id,name,body,variables,active,supported',order:'name'}),
+      db.select('fs_contacts',{unit_id:eq(id),select:'id,name',order:'name',limit:100}),
       db.select('fs_services',{unit_id:eq(id),order:'name'}),
       db.select('fs_appointments',{unit_id:eq(id),order:'scheduled_at.desc',limit:100}),
       db.select('fs_rules',{unit_id:eq(id),order:'name'}),
       recentJobs(id),
       db.select('fs_events',{unit_id:eq(id),event:'neq.diagnostic',order:'created_at.desc',limit:30}),
-    ]);
-    const [professionals,stock,feedback]=await Promise.all([
-      db.select('fs_professionals',{unit_id:eq(id),order:'name'}),
-      db.select('fs_avec_records',{unit_id:eq(id),report_code:'eq.0046',external_key:'eq.snapshot'}),
+      db.select('fs_avec_records',{unit_id:eq(id),report_code:'eq.0046',external_key:'eq.snapshot',select:'payload'}),
       db.select('fs_feedback',{unit_id:eq(id),select:'id,contact_id,appointment_id,score,comment,created_at,answered_at',order:'created_at.desc',limit:500}),
     ]);
     const responses=feedback.filter(row=>row.score!==null);
-    return {unit:safeUnit(unit),channels,templates,contacts,services,appointments,rules,jobs,events,professionals,
+    return {unit:safeUnit(unit),channels,templates,contacts,services,appointments,rules,jobs,events,
       products:stock[0]?.payload?.products||[],feedback:{configured:survey?.configured||false,responses,total:responses.length,invited:feedback.length,
         average:responses.length?responses.reduce((sum,row)=>sum+row.score,0)/responses.length:null,
         satisfied:responses.length?100*responses.filter(row=>row.score>=4).length/responses.length:0}};
@@ -201,7 +199,8 @@ export function application({ db, secrets, catalog = readCatalog, send = sendMes
   async function ruleContext(unit) {
     const [contacts,appointments,services,jobs]=await Promise.all([
       db.all('fs_contacts',{unit_id:eq(unit.id)}),db.all('fs_appointments',{unit_id:eq(unit.id)}),
-      db.all('fs_services',{unit_id:eq(unit.id)}),db.all('fs_jobs',{unit_id:eq(unit.id)}),
+      db.all('fs_services',{unit_id:eq(unit.id)}),
+      db.all('fs_jobs',{unit_id:eq(unit.id),select:'idempotency_key,rule_id,contact_id,status,created_at'}),
     ]);
     return {unit,contacts,appointments,services,jobs};
   }
@@ -380,7 +379,6 @@ export function application({ db, secrets, catalog = readCatalog, send = sendMes
       }
       if(input.alerts){
         const a=input.alerts;
-        const previous=await one('fs_alert_settings',{unit_id:eq(id)});
         const config={arrival_mapping:a.arrival_mapping||{},stock_mapping:a.stock_mapping||{},
           stock_cooldown_days:Number(a.stock_cooldown_days??7),armed_at:new Date().toISOString()};
         assert(Number.isInteger(config.stock_cooldown_days)&&config.stock_cooldown_days>=1&&config.stock_cooldown_days<=365,'Intervalo de estoque inválido.');
@@ -544,9 +542,13 @@ export function application({ db, secrets, catalog = readCatalog, send = sendMes
       return {saved:true};
     }
     if(action==='contacts'&&method==='GET'){
-      const page=Math.max(0,Number(input.page)||0);
+      const page=input.page===undefined ? 0 : Number(input.page);
+      assert(Number.isSafeInteger(page)&&page>=0&&page<=Math.floor(2147483647/25),'Página inválida.');
       const params={unit_id:eq(id),order:'name,id',limit:26,offset:page*25};
-      if(input.eligible==='true')params.consent='eq.true';
+      if(input.eligible==='true'){
+        params.consent='eq.true';
+        params.send_blocked='eq.false';
+      }
       const search=text(input.search,80).replace(/[^\p{L}\p{N}+ -]/gu,'');
       if(search) params.or=`(name.ilike.*${search}*,phone.ilike.*${search}*)`;
       return db.select('fs_contacts',params);
@@ -592,7 +594,7 @@ export function application({ db, secrets, catalog = readCatalog, send = sendMes
       else{
         assert(Array.isArray(input.contacts)&&input.contacts.length>=1&&input.contacts.length<=100,'Selecione até 100 contatos.');
         const ids=[...new Set(input.contacts.map(uuid))];
-        recipients=await db.select('fs_contacts',{unit_id:eq(id),id:'in.('+ids.join(',')+')',consent:'eq.true'});
+        recipients=await db.select('fs_contacts',{unit_id:eq(id),id:'in.('+ids.join(',')+')',consent:'eq.true',send_blocked:'eq.false'});
         assert(recipients.length===ids.length,'Há contatos sem autorização na seleção.');
         assert(recipients.every(contact=>contact.phone),'Complete os telefones dos clientes selecionados.');
       }
@@ -624,15 +626,16 @@ export function application({ db, secrets, catalog = readCatalog, send = sendMes
         armed_at:enabled?new Date().toISOString():null};
       assert(values.name&&/^([01]\d|2[0-3]):[0-5]\d$/.test(values.send_time),'Preencha nome e horário.');
       for(const n of [values.delay_days,values.cooldown_days]) assert(Number.isInteger(n)&&n>=0&&n<=3650,'Intervalo inválido.');
-      if(values.type!=='birthday')assert(values.appointment_statuses.length&&
+      const routine=routines[values.type];
+      if(routine.statusFilter)assert(values.appointment_statuses.length&&
         values.appointment_statuses.every(status=>appointmentStatuses.includes(status)),
         'Selecione pelo menos um estado válido do atendimento.');
-      if(values.type==='cross_sell') assert(values.target_service_id,'Selecione o serviço recomendado.');
+      if(routine.recommendedService) assert(values.target_service_id,'Selecione o serviço recomendado.');
       if(values.type==='csat'){
         assert(survey?.configured,'Configure PUBLIC_ORIGIN no serviço para enviar avaliações.');
       }
       for(const serviceId of [values.service_id,values.target_service_id]) if(serviceId) assert(await one('fs_services',{unit_id:eq(id),id:eq(uuid(serviceId))}),'Serviço inválido.');
-      assert(validContextMapping(values.type==='csat'?'csat':'rule',template.variables,values.mapping),
+      assert(validContextMapping(routineMessageContext(values.type),template.variables,values.mapping),
         values.type==='csat'?'Preencha os campos e inclua o link da avaliação em um campo do modelo CSAT.':'Preencha todos os campos do modelo.');
       if(input.id) return db.update('fs_rules',{id:eq(uuid(input.id)),unit_id:eq(id)},values);
       return db.insert('fs_rules',values);

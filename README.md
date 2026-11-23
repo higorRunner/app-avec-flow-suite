@@ -103,3 +103,7 @@ Use Node.js 24 ou superior. O servidor de produção usa módulos nativos e inic
 Para instalar as ferramentas de desenvolvimento, execute **npm install**. Para rodar os testes, execute **npm test**.
 
 Os testes usam PostgreSQL local em WebAssembly e respostas Clickmassa simuladas. Eles verificam o reset SQL, permissões, criptografia, sessões, isolamento entre unidades, importação de catálogo e fila de envio. A validação de integração com contas e telefones reais é feita pelo envio de teste no painel.
+
+Para validar a interface localmente com dados simulados, inicie `node tests/browser-server.mjs` em um terminal. Em outro, instale o Playwright com `python -m pip install playwright`, instale o Chromium com `python -m playwright install chromium` e rode `python tests/browser.py`. A suíte usa a porta 8771 por padrão. `FLOWSUITE_TEST_AXE` aceita o caminho para `axe.min.js` e habilita as verificações de acessibilidade.
+
+Os relatórios e contratos de manutenção ficam em [Modernização](docs/MODERNIZACAO.md), [Design system](docs/DESIGN_SYSTEM.md) e [Configuração de automações e envios](docs/AUTOMACOES.md).
